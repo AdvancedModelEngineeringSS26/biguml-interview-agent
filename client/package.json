@@ -1,0 +1,63 @@
+{
+  "name": "client",
+  "version": "1.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "workspaces": [
+    "application/*",
+    "packages/*",
+    "tooling/*"
+  ],
+  "scripts": {
+    "build": "lerna run build",
+    "build:tooling": "lerna run build --scope @borkdominik-biguml/uml-language-tooling",
+    "clean": "lerna run clean",
+    "compile": "lerna run compile",
+    "depcheck": "npx depcheck --config .depcheck.yml",
+    "generate": "lerna run generate",
+    "lint": "lerna run lint",
+    "lint:fix": "lerna run lint:fix",
+    "package": "cd application/vscode && npm run vscode:package && mv ./*.vsix ${INIT_CWD}/release/vsix",
+    "package:zip": "npm run package && cd ${INIT_CWD} && zip -r ./release-$(date +%Y%m%d-%H%M).zip ./release",
+    "setup": "npm ci && npm run build:tooling && npm run generate && npm run build",
+    "watch": "lerna run --parallel --stream watch"
+  },
+  "overrides": {
+    "@eclipse-glsp/client": "2.5.0",
+    "@eclipse-glsp/layout-elk": "2.5.0",
+    "@eclipse-glsp/protocol": "2.5.0",
+    "@eclipse-glsp/server": "2.5.0",
+    "@eclipse-glsp/vscode-integration": "2.5.0",
+    "@eclipse-glsp/vscode-integration-webview": "2.5.0"
+  },
+  "dependencies": {
+    "handlebars": "^4.7.8"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.20.0",
+    "@types/lodash": "^4.14.195",
+    "@types/node": "^20.4.2",
+    "chai": "^5.2.0",
+    "concurrently": "^9.1.2",
+    "esbuild": "^0.17.19",
+    "esbuild-plugin-copy": "^2.1.1",
+    "eslint": "^9.20.1",
+    "eslint-plugin-header": "^3.1.1",
+    "eslint-plugin-n": "^17.15.1",
+    "eslint-plugin-react": "^7.37.4",
+    "eslint-plugin-react-hooks": "^5.1.0",
+    "glob": "^11.0.1",
+    "globals": "^15.15.0",
+    "lerna": "^9.0.0",
+    "prettier": "^3.5.1",
+    "prettier-plugin-packagejson": "^2.5.8",
+    "rimraf": "^6.0.1",
+    "tsx": "^4.19.3",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.24.0"
+  },
+  "engines": {
+    "node": ">=24.14.0"
+  }
+}

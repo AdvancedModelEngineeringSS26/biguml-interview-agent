@@ -1,0 +1,15 @@
+# Build
+node_modules
+.browser_modules
+build
+dist
+*.tsbuildinfo
+
+# Files
+*.log
+.DS_Store
+
+# Local
+*.vsix
+*.zip
+/.idea/
