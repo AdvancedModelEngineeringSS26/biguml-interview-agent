@@ -320,13 +320,43 @@
           "title": "UML"
         }
       ]
-    }
+    },
+    "chatParticipants": [
+      {
+        "id": "biguml.interviewAgent",
+        "fullName": "bigUML Interview Agent",
+        "name": "biguml",
+        "description": "Interactively creates and modifies UML diagrams through structured interviews",
+        "isSticky": true
+      }
+    ],
+    "languageModelTools": [
+      {
+        "name": "biguml-dummy-tool",
+        "displayName": "bigUML Dummy Tool",
+        "modelDescription": "Dummy callable tool for validating the interview agent tool integration.",
+        "canBeReferencedInPrompt": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "message": {
+              "type": "string",
+              "description": "Message passed to the dummy tool"
+            }
+          },
+          "required": [
+            "message"
+          ]
+        }
+      }
+    ]
   },
   "activationEvents": [
     "onStartupFinished"
   ],
   "dependencies": {
     "@borkdominik-biguml/big-advancedsearch": "*",
+    "@borkdominik-biguml/big-ai": "*",
     "@borkdominik-biguml/big-code-generation": "*",
     "@borkdominik-biguml/big-common": "*",
     "@borkdominik-biguml/big-minimap": "*",
