@@ -22,36 +22,6 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         }
 
         this.participant = vscode.chat.createChatParticipant(AI_PARTICIPANT_ID, this.handleRequest.bind(this));
-
-        this.participant.followupProvider = {
-            provideFollowups: (_result, context, token) => {
-                void token;
-
-                if (context.history.length === 0) {
-                    return [
-                        {
-                            prompt: 'I want to create a class diagram',
-                            label: 'New Class Diagram'
-                        },
-                        {
-                            prompt: 'Help me modify an existing UML diagram',
-                            label: 'Modify Diagram'
-                        }
-                    ];
-                }
-
-                return [
-                    {
-                        prompt: 'Ask the next clarifying question',
-                        label: 'Continue Interview'
-                    },
-                    {
-                        prompt: 'Summarize the current model requirements',
-                        label: 'Summarize'
-                    }
-                ];
-            }
-        };
     }
 
     protected async handleRequest(
