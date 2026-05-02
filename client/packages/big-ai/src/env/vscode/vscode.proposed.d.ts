@@ -63,6 +63,46 @@ declare module 'vscode' {
 
     export namespace lm {
         export function registerTool<T>(name: string, tool: LanguageModelTool<T>): Disposable;
+        export function invokeTool<T>(
+            name: string,
+            options: LanguageModelToolInvocationOptions<T>,
+            token: CancellationToken
+        ): Thenable<LanguageModelToolResult>;
+        export function selectChatModels(selector?: LanguageModelChatSelector): Thenable<LanguageModelChat[]>;
+        export const tools: readonly LanguageModelToolInformation[];
+    }
+
+    export interface LanguageModelChatSelector {
+        vendor?: string;
+        family?: string;
+        version?: string;
+        id?: string;
+    }
+
+    export interface LanguageModelToolInformation {
+        readonly name: string;
+    }
+
+    export interface LanguageModelChat {
+        sendRequest(
+            messages: readonly LanguageModelChatMessage[],
+            options: LanguageModelChatRequestOptions,
+            token: CancellationToken
+        ): Thenable<LanguageModelChatResponse>;
+    }
+
+    export interface LanguageModelChatRequestOptions {
+        tools?: readonly LanguageModelToolInformation[];
+    }
+
+    export interface LanguageModelChatResponse {
+        readonly stream: AsyncIterable<LanguageModelTextPart | LanguageModelToolCallPart>;
+    }
+
+    export class LanguageModelChatMessage {
+        static User(content: string | MarkdownString): LanguageModelChatMessage;
+        static Assistant(content: string | MarkdownString | readonly LanguageModelToolCallPart[]): LanguageModelChatMessage;
+        static Tool(content: readonly LanguageModelTextPart[], callId: string): LanguageModelChatMessage;
     }
 
     export interface LanguageModelTool<T = unknown> {
@@ -90,6 +130,13 @@ declare module 'vscode' {
     export class LanguageModelTextPart {
         constructor(value: string);
         readonly value: string;
+    }
+
+    export class LanguageModelToolCallPart {
+        constructor(name: string, callId: string, input: unknown);
+        readonly name: string;
+        readonly callId: string;
+        readonly input: unknown;
     }
 
     export class LanguageModelToolResult {

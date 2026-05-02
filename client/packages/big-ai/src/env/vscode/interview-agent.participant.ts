@@ -10,7 +10,7 @@
 import type { OnActivate, OnDispose } from '@borkdominik-biguml/big-vscode/vscode';
 import { injectable } from 'inversify';
 import * as vscode from 'vscode';
-import { AI_PARTICIPANT_ID } from '../common/index.js';
+import { AI_PARTICIPANT_ID, UML_TOOL_NAMES } from '../common/index.js';
 
 @injectable()
 export class InterviewAgentParticipant implements OnActivate, OnDispose {
@@ -21,32 +21,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
             return;
         }
 
-        this.participant = vscode.chat.createChatParticipant(AI_PARTICIPANT_ID, async (request, context, stream, token) => {
-            void token;
-
-            const followupHint =
-                context.history.length > 0
-                    ? 'You can continue the interview flow or call the dummy AI tool to validate the integration.'
-                    : '';
-
-            stream.markdown(
-                'The interview agent chat participant is wired up. A dummy AI tool is also registered so the integration can be tested end-to-end.'
-            );
-
-            if (request.references.length > 0) {
-                stream.markdown(`\n\nI detected ${request.references.length} attached reference(s).`);
-            }
-
-            if (followupHint.length > 0) {
-                stream.markdown(`\n\n${followupHint}`);
-            }
-
-            return {
-                metadata: {
-                    command: request.command ?? 'default'
-                }
-            };
-        });
+        this.participant = vscode.chat.createChatParticipant(AI_PARTICIPANT_ID, this.handleRequest.bind(this));
 
         this.participant.followupProvider = {
             provideFollowups: (_result, context, token) => {
@@ -77,6 +52,82 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                 ];
             }
         };
+    }
+
+    protected async handleRequest(
+        request: vscode.ChatRequest,
+        context: vscode.ChatContext,
+        stream: vscode.ChatResponseStream,
+        token: vscode.CancellationToken
+    ): Promise<vscode.ChatResult> {
+        const [model] = await vscode.lm.selectChatModels({ family: 'gpt-4o' });
+        if (!model) {
+            stream.markdown('No compatible chat model is available.');
+            return {
+                metadata: {
+                    command: request.command ?? 'default',
+                    toolUsed: false
+                }
+            };
+        }
+
+        const messages: vscode.LanguageModelChatMessage[] = [
+            vscode.LanguageModelChatMessage.User(this.buildPrompt(request, context))
+        ];
+
+        let toolUsed = false;
+
+        for (let iteration = 0; iteration < 3 && !token.isCancellationRequested; iteration++) {
+            const response = await model.sendRequest(
+                messages,
+                {
+                    tools: vscode.lm.tools.filter(tool => tool.name === UML_TOOL_NAMES.dummy)
+                },
+                token
+            );
+
+            let requestedTool = false;
+
+            for await (const part of response.stream) {
+                if (part instanceof vscode.LanguageModelTextPart) {
+                    stream.markdown(part.value);
+                    continue;
+                }
+
+                if (part instanceof vscode.LanguageModelToolCallPart) {
+                    requestedTool = true;
+                    toolUsed = true;
+
+                    const toolResult = await vscode.lm.invokeTool(part.name, { input: part.input }, token);
+                    const chatMessageFactory = vscode.LanguageModelChatMessage as unknown as {
+                        Tool(content: unknown, callId: string): vscode.LanguageModelChatMessage;
+                    };
+
+                    messages.push(vscode.LanguageModelChatMessage.Assistant([part]));
+                    messages.push(chatMessageFactory.Tool(toolResult.content, part.callId));
+                }
+            }
+
+            if (!requestedTool) {
+                break;
+            }
+        }
+
+        return {
+            metadata: {
+                command: request.command ?? 'default',
+                toolUsed
+            }
+        };
+    }
+
+    protected buildPrompt(request: vscode.ChatRequest, context: vscode.ChatContext): string {
+        const intro =
+            'You are the bigUML interview agent. When useful, call the registered dummy tool once to validate the VS Code LM tool integration. After the tool call, briefly explain the result to the user.';
+        const referenceInfo = request.references.length > 0 ? `Attached references: ${request.references.length}.` : 'No attached references.';
+        const historyInfo = context.history.length > 0 ? `Conversation turns so far: ${context.history.length}.` : 'This is the first turn.';
+
+        return `${intro}\n${referenceInfo}\n${historyInfo}\nUser request: ${request.prompt}`;
     }
 
     dispose(): void {
