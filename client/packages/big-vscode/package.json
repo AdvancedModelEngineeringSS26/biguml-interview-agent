@@ -55,7 +55,7 @@
     "@borkdominik-biguml/uml-model-server": "*",
     "@eclipse-glsp/vscode-integration": "*",
     "@eclipse-glsp/vscode-integration-webview": "*",
-    "@types/vscode": "^1.63.0",
+    "@types/vscode": "^1.93.0",
     "@vscode/codicons": "^0.0.25",
     "reflect-metadata": "^0.2.2",
     "vscode-messenger": "^0.4.5",

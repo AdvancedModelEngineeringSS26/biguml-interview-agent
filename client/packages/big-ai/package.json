@@ -51,7 +51,7 @@
     "@borkdominik-biguml/big-vscode": "*"
   },
   "devDependencies": {
-    "@types/vscode": "^1.63.0"
+    "@types/vscode": "^1.93.0"
   },
   "peerDependencies": {
     "inversify": "^6.2.1"
