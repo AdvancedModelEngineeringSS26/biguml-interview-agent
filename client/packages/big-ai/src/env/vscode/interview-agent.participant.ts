@@ -60,7 +60,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         stream: vscode.ChatResponseStream,
         token: vscode.CancellationToken
     ): Promise<vscode.ChatResult> {
-        const [model] = await vscode.lm.selectChatModels({ family: 'gpt-4o' });
+        const [model] = await vscode.lm.selectChatModels({ vendor: 'copilot', family: 'gpt-4o' });
         if (!model) {
             stream.markdown('No compatible chat model is available.');
             return {
@@ -71,9 +71,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
             };
         }
 
-        const messages: vscode.LanguageModelChatMessage[] = [
-            vscode.LanguageModelChatMessage.User(this.buildPrompt(request, context))
-        ];
+        const messages: vscode.LanguageModelChatMessage[] = [vscode.LanguageModelChatMessage.User(this.buildPrompt(request, context))];
 
         let toolUsed = false;
 
@@ -86,7 +84,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                 token
             );
 
-            let requestedTool = false;
+            const toolCalls: vscode.LanguageModelToolCallPart[] = [];
 
             for await (const part of response.stream) {
                 if (part instanceof vscode.LanguageModelTextPart) {
@@ -95,21 +93,31 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                 }
 
                 if (part instanceof vscode.LanguageModelToolCallPart) {
-                    requestedTool = true;
-                    toolUsed = true;
-
-                    const toolResult = await vscode.lm.invokeTool(part.name, { input: part.input }, token);
-                    const chatMessageFactory = vscode.LanguageModelChatMessage as unknown as {
-                        Tool(content: unknown, callId: string): vscode.LanguageModelChatMessage;
-                    };
-
-                    messages.push(vscode.LanguageModelChatMessage.Assistant([part]));
-                    messages.push(chatMessageFactory.Tool(toolResult.content, part.callId));
+                    toolCalls.push(part);
                 }
             }
 
-            if (!requestedTool) {
+            if (toolCalls.length === 0) {
                 break;
+            }
+
+            toolUsed = true;
+            messages.push(vscode.LanguageModelChatMessage.Assistant(toolCalls));
+
+            for (const toolCall of toolCalls) {
+                const toolResult = await vscode.lm.invokeTool(
+                    toolCall.name,
+                    {
+                        input: toolCall.input as object,
+                        toolInvocationToken: request.toolInvocationToken
+                    },
+                    token
+                );
+                messages.push(
+                    vscode.LanguageModelChatMessage.User([
+                        new vscode.LanguageModelToolResultPart(toolCall.callId, toolResult.content)
+                    ])
+                );
             }
         }
 
