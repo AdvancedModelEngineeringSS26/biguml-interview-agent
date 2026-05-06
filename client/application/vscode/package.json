@@ -38,6 +38,9 @@
   ],
   "publisher": "BIGModelingTools",
   "type": "module",
+  "extensionDependencies": [
+    "github.copilot-chat"
+  ],
   "main": "./build/index.cjs",
   "files": [
     "build",
@@ -320,13 +323,43 @@
           "title": "UML"
         }
       ]
-    }
+    },
+    "chatParticipants": [
+      {
+        "id": "biguml.interviewAgent",
+        "fullName": "bigUML Interview Agent",
+        "name": "biguml",
+        "description": "Interactively creates and modifies UML diagrams through structured interviews",
+        "isSticky": true
+      }
+    ],
+    "languageModelTools": [
+      {
+        "name": "biguml-dummy-tool",
+        "displayName": "bigUML Dummy Tool",
+        "modelDescription": "Dummy callable tool for validating the interview agent tool integration.",
+        "canBeReferencedInPrompt": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "message": {
+              "type": "string",
+              "description": "Message passed to the dummy tool"
+            }
+          },
+          "required": [
+            "message"
+          ]
+        }
+      }
+    ]
   },
   "activationEvents": [
     "onStartupFinished"
   ],
   "dependencies": {
     "@borkdominik-biguml/big-advancedsearch": "*",
+    "@borkdominik-biguml/big-ai": "*",
     "@borkdominik-biguml/big-code-generation": "*",
     "@borkdominik-biguml/big-common": "*",
     "@borkdominik-biguml/big-minimap": "*",
@@ -359,11 +392,11 @@
     "@types/react": "^18.0.0",
     "@types/react-dom": "^18.0.0",
     "@types/urijs": "1.19.11",
-    "@types/vscode": "^1.63.0",
+    "@types/vscode": "^1.93.0",
     "@vscode/vsce": "^3.6.2"
   },
   "engines": {
-    "vscode": "^1.63.0"
+    "vscode": "^1.93.0"
   },
   "icon": "./resources/logo.png",
   "galleryBanner": {
