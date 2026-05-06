@@ -10,3 +10,11 @@
 export interface DummyToolInput {
     message: string;
 }
+
+export type CommandType = 'interview' | 'modify' | 'explain' | 'default';
+
+export interface ParsedCommand {
+  type: CommandType;
+  argument: string;
+}
+
