@@ -330,7 +330,21 @@
         "fullName": "bigUML Interview Agent",
         "name": "biguml",
         "description": "Interactively creates and modifies UML diagrams through structured interviews",
-        "isSticky": true
+        "isSticky": true,
+        "commands": [
+            {
+                "name": "interview",
+                "description": "Analyze UML design through Socratic questioning"
+            },
+            {
+                "name": "modify",
+                "description": "Get specific improvement suggestions for the diagram"
+            },
+            {
+                "name": "explain",
+                "description": "Explain UML concepts and design patterns"
+            }
+        ]
       }
     ],
     "languageModelTools": [
