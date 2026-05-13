@@ -78,6 +78,11 @@ export class GenericCreateEdgeOperationHandler extends OperationHandler implemen
             }
         }
 
+        const customName = operation.args?.['name'] as string | undefined;
+        if (customName !== undefined) {
+            value.name = customName;
+        }
+
         return {
             op: 'add',
             path: '/diagram/relations/-',

@@ -72,24 +72,34 @@ export class RemoveNodeTool implements vscode.LanguageModelTool<RemoveNodeInput>
             return createToolResult(`Error: No element named "${elementName}" found in ${filePath}`);
         }
 
+        const elementId = diagram.diagram.entities[index].__id;
+
+        // Try GLSP operation first so the diagram updates immediately
+        const glspSuccess = await vscode.commands.executeCommand<boolean>(
+            'biguml.operations.deleteElement', filePath, elementId
+        );
+        if (glspSuccess === true) {
+            this.outputChannel.appendLine(`[big-ai] Removed "${elementName}" via GLSP operation`);
+            return createToolResult(`Removed "${elementName}" from ${filePath}`);
+        }
+
+        // Fallback: write directly to file (diagram not open)
         const [removed] = diagram.diagram.entities.splice(index, 1);
         const removedId = removed.__id;
 
-        // Remove dangling relations that reference this element
         diagram.diagram.relations = diagram.diagram.relations.filter(r => {
             const src = (r['source'] as { __value?: string } | undefined)?.__value;
             const tgt = (r['target'] as { __value?: string } | undefined)?.__value;
             return src !== removedId && tgt !== removedId;
         });
 
-        // Remove size/position metaInfos for this element
         diagram.metaInfos = diagram.metaInfos.filter(
             m => m.__id !== `size_${removedId}` && m.__id !== `pos_${removedId}`
         );
 
         await vscode.workspace.fs.writeFile(uri, Buffer.from(JSON.stringify(diagram, null, '\t'), 'utf-8'));
 
-        this.outputChannel.appendLine(`[big-ai] Removed "${elementName}" (id: ${removedId})`);
+        this.outputChannel.appendLine(`[big-ai] Removed "${elementName}" (id: ${removedId}) via file write`);
         return createToolResult(`Removed "${elementName}" from ${filePath}`);
     }
 }

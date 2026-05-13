@@ -45,6 +45,17 @@ const BOUNDED_TYPES = new Set<UmlNodeType>([
     'Class', 'AbstractClass', 'Interface', 'Enumeration', 'Package', 'DataType', 'PrimitiveType'
 ]);
 
+// Mapping from UmlNodeType to GLSP element type IDs
+const NODE_TYPE_ID: Record<UmlNodeType, string> = {
+    Class: 'class__Class',
+    AbstractClass: 'class__AbstractClass',
+    Interface: 'class__Interface',
+    Enumeration: 'class__Enumeration',
+    Package: 'class__Package',
+    DataType: 'class__DataType',
+    PrimitiveType: 'class__PrimitiveType'
+};
+
 @injectable()
 export class AddNodeTool implements vscode.LanguageModelTool<AddNodeInput> {
     constructor(@inject(OutputChannel) protected readonly outputChannel: OutputChannel) {}
@@ -78,13 +89,31 @@ export class AddNodeTool implements vscode.LanguageModelTool<AddNodeInput> {
             return createToolResult(`Error: An element named "${name}" already exists in the diagram.`);
         }
 
+        // Compute position for the new node
+        const positionCount = diagram.metaInfos.filter(m => m.__type === 'Position').length;
+        const col = positionCount % 4;
+        const row = Math.floor(positionCount / 4);
+        const x = 50 + col * 220;
+        const y = 50 + row * 160;
+
+        // Try GLSP operation first so the diagram updates immediately
+        if (BOUNDED_TYPES.has(elementType)) {
+            const elementTypeId = NODE_TYPE_ID[elementType];
+            const glspSuccess = await vscode.commands.executeCommand<boolean>(
+                'biguml.operations.createNode', filePath, elementTypeId, name, x, y
+            );
+            if (glspSuccess === true) {
+                this.outputChannel.appendLine(`[big-ai] Added ${elementType} "${name}" via GLSP operation`);
+                return createToolResult(`Added ${elementType} "${name}" to ${filePath}`);
+            }
+        }
+
+        // Fallback: write directly to file (diagram not open or unbounded type)
         const id = generateId();
         const node = buildNode(elementType, id, name, properties);
         diagram.diagram.entities.push(node);
 
         if (BOUNDED_TYPES.has(elementType)) {
-            const entityCount = diagram.diagram.entities.length - 1;
-            const { x, y } = autoPosition(entityCount, diagram.metaInfos);
             diagram.metaInfos.push(
                 {
                     __type: 'Size',
@@ -105,14 +134,13 @@ export class AddNodeTool implements vscode.LanguageModelTool<AddNodeInput> {
 
         await vscode.workspace.fs.writeFile(uri, Buffer.from(JSON.stringify(diagram, null, '\t'), 'utf-8'));
 
-        this.outputChannel.appendLine(`[big-ai] Added ${elementType} "${name}" (id: ${id})`);
+        this.outputChannel.appendLine(`[big-ai] Added ${elementType} "${name}" (id: ${id}) via file write`);
         return createToolResult(`Added ${elementType} "${name}" (id: ${id}) to ${filePath}`);
     }
 }
 
 function generateId(): string {
     const uuid = randomUUID();
-    // Prefix with 'a' to match the existing ID format in workspace files
     return `a${uuid.substring(1)}`;
 }
 
@@ -138,13 +166,4 @@ function elementDefaults(elementType: UmlNodeType): Record<string, unknown> {
         case 'PrimitiveType':
             return {};
     }
-}
-
-function autoPosition(entityIndex: number, metaInfos: MetaInfo[]): { x: number; y: number } {
-    // Count existing position entries to avoid stacking on top of existing elements
-    const positionCount = metaInfos.filter(m => m.__type === 'Position').length;
-    const col = positionCount % 4;
-    const row = Math.floor(positionCount / 4);
-    void entityIndex;
-    return { x: 50 + col * 220, y: 50 + row * 160 };
 }

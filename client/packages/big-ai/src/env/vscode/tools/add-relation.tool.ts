@@ -14,6 +14,23 @@ import * as vscode from 'vscode';
 import type { AddRelationInput, UmlRelationType } from '../../common/index.js';
 import { createToolResult, resolveWorkspacePath } from './tool-utils.js';
 
+// Maps UmlRelationType to the GLSP element type ID used in CreateEdgeOperation
+const GLSP_EDGE_TYPE_ID: Record<UmlRelationType, string> = {
+    Association: 'class__Association',
+    Aggregation: 'class__aggregation__Association',
+    Composition: 'class__composition__Association',
+    Abstraction: 'class__Abstraction',
+    Dependency: 'class__Dependency',
+    Generalization: 'class__Generalization',
+    InterfaceRealization: 'class__InterfaceRealization',
+    PackageImport: 'class__PackageImport',
+    PackageMerge: 'class__PackageMerge',
+    Realization: 'class__Realization',
+    Substitution: 'class__Substitution',
+    Usage: 'class__Usage'
+};
+
+// Maps UmlRelationType to the relationType field stored in the JSON file
 const RELATION_TYPE_MAP: Record<UmlRelationType, string> = {
     Association: 'ASSOCIATION',
     Aggregation: 'AGGREGATION',
@@ -88,6 +105,18 @@ export class AddRelationTool implements vscode.LanguageModelTool<AddRelationInpu
             return createToolResult(`Error: No element named "${targetName}" found in ${filePath}`);
         }
 
+        // Try GLSP operation first so the diagram updates immediately
+        const elementTypeId = GLSP_EDGE_TYPE_ID[relationType];
+        const glspSuccess = await vscode.commands.executeCommand<boolean>(
+            'biguml.operations.createEdge', filePath, elementTypeId, sourceNode.__id, targetNode.__id,
+            NAMED_TYPES.has(relationType) ? name : undefined
+        );
+        if (glspSuccess === true) {
+            this.outputChannel.appendLine(`[big-ai] Added ${relationType} from "${sourceName}" to "${targetName}" via GLSP operation`);
+            return createToolResult(`Added ${relationType} from "${sourceName}" to "${targetName}" in ${filePath}`);
+        }
+
+        // Fallback: write directly to file (diagram not open)
         const id = generateId();
         const ref = (nodeId: string) => ({ __type: 'Reference', __refType: 'Node', __value: nodeId });
 
@@ -115,7 +144,7 @@ export class AddRelationTool implements vscode.LanguageModelTool<AddRelationInpu
         diagram.diagram.relations.push(relation);
         await vscode.workspace.fs.writeFile(uri, Buffer.from(JSON.stringify(diagram, null, '\t'), 'utf-8'));
 
-        this.outputChannel.appendLine(`[big-ai] Added ${relationType} from "${sourceName}" to "${targetName}" (id: ${id})`);
+        this.outputChannel.appendLine(`[big-ai] Added ${relationType} from "${sourceName}" to "${targetName}" (id: ${id}) via file write`);
         return createToolResult(`Added ${relationType} from "${sourceName}" to "${targetName}" (id: ${id}) in ${filePath}`);
     }
 }
