@@ -12,3 +12,17 @@ import * as vscode from 'vscode';
 export function createToolResult(message: string): vscode.LanguageModelToolResult {
     return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(message)]);
 }
+
+export function resolveWorkspacePath(filePath: string): vscode.Uri {
+    const folders = vscode.workspace.workspaceFolders;
+    if (!folders || folders.length === 0) {
+        throw new Error('No workspace folder open.');
+    }
+    const root = folders[0].uri;
+    const resolved = vscode.Uri.joinPath(root, filePath);
+    if (!resolved.fsPath.startsWith(root.fsPath)) {
+        throw new Error(`Path "${filePath}" escapes the workspace root.`);
+    }
+    return resolved;
+}
+

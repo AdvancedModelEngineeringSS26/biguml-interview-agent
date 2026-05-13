@@ -9,3 +9,9 @@
 
 export * from './tool-utils.js';
 export * from './dummy.tool.js';
+export * from './create-uml-file.tool.js';
+export * from './read-uml-file.tool.js';
+export * from './add-node.tool.js';
+export * from './remove-node.tool.js';
+export * from './add-relation.tool.js';
+export * from './remove-relation.tool.js';

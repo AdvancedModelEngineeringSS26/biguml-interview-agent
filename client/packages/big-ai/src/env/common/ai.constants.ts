@@ -12,7 +12,13 @@ export const AI_PARTICIPANT_NAME = 'biguml';
 export const AI_PARTICIPANT_FULL_NAME = 'bigUML Interview Agent';
 
 export const UML_TOOL_NAMES = {
-    dummy: 'biguml-dummy-tool'
+    dummy: 'biguml-dummy-tool',
+    createUmlFile: 'biguml-create-uml-file',
+    readUmlFile: 'biguml-read-uml-file',
+    addNode: 'biguml-add-node',
+    removeNode: 'biguml-remove-node',
+    addRelation: 'biguml-add-relation',
+    removeRelation: 'biguml-remove-relation'
 } as const;
 
 export const SYSTEM_PROMPT = `You are the bigUML Interview Agent, an AI assistant specialized in UML diagram analysis and modification.

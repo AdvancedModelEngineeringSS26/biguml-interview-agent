@@ -365,6 +365,162 @@
             "message"
           ]
         }
+      },
+      {
+        "name": "biguml-create-uml-file",
+        "displayName": "Create UML File",
+        "modelDescription": "Creates a new empty UML file at the specified path with a given diagram type. Use this when the user wants to start a new diagram.",
+        "canBeReferencedInPrompt": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "filePath": {
+              "type": "string",
+              "description": "Workspace-relative path for the new .uml file"
+            },
+            "diagramType": {
+              "type": "string",
+              "enum": ["CLASS"],
+              "description": "The type of UML diagram to create"
+            }
+          },
+          "required": ["filePath", "diagramType"]
+        }
+      },
+      {
+        "name": "biguml-read-uml-file",
+        "displayName": "Read UML File",
+        "modelDescription": "Reads and returns the content of a .uml file as JSON. Use this to understand the current state of a diagram before making changes.",
+        "canBeReferencedInPrompt": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "filePath": {
+              "type": "string",
+              "description": "Workspace-relative path of the .uml file to read"
+            }
+          },
+          "required": ["filePath"]
+        }
+      },
+      {
+        "name": "biguml-add-node",
+        "displayName": "Add UML Node",
+        "modelDescription": "Adds a new node (e.g., Class, Interface, Enumeration, Package) to an existing UML diagram. Provide the file path, element type, and name for the new element.",
+        "canBeReferencedInPrompt": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "filePath": {
+              "type": "string",
+              "description": "Workspace-relative path of the .uml file"
+            },
+            "elementType": {
+              "type": "string",
+              "enum": ["Class", "AbstractClass", "Interface", "Enumeration", "Package", "DataType", "PrimitiveType"],
+              "description": "UML element type to add"
+            },
+            "name": {
+              "type": "string",
+              "description": "Name of the new element"
+            },
+            "properties": {
+              "type": "object",
+              "description": "Optional additional properties for the element"
+            }
+          },
+          "required": ["filePath", "elementType", "name"]
+        }
+      },
+      {
+        "name": "biguml-remove-node",
+        "displayName": "Remove UML Node",
+        "modelDescription": "Removes a node from an existing UML diagram by its name.",
+        "canBeReferencedInPrompt": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "filePath": {
+              "type": "string",
+              "description": "Workspace-relative path of the .uml file"
+            },
+            "elementName": {
+              "type": "string",
+              "description": "Name of the element to remove"
+            }
+          },
+          "required": ["filePath", "elementName"]
+        }
+      },
+      {
+        "name": "biguml-add-relation",
+        "displayName": "Add UML Relation",
+        "modelDescription": "Adds a relationship between two existing elements in a UML diagram. Supported types: Association, Aggregation, Composition, Abstraction, Dependency, Generalization, InterfaceRealization, PackageImport, PackageMerge, Realization, Substitution, Usage.",
+        "canBeReferencedInPrompt": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "filePath": {
+              "type": "string",
+              "description": "Workspace-relative path of the .uml file"
+            },
+            "relationType": {
+              "type": "string",
+              "enum": ["Association", "Aggregation", "Composition", "Abstraction", "Dependency", "Generalization", "InterfaceRealization", "PackageImport", "PackageMerge", "Realization", "Substitution", "Usage"],
+              "description": "The type of relationship to create"
+            },
+            "sourceName": {
+              "type": "string",
+              "description": "Name of the source element"
+            },
+            "targetName": {
+              "type": "string",
+              "description": "Name of the target element"
+            },
+            "name": {
+              "type": "string",
+              "description": "Optional name for the relation (supported by Association, Aggregation, Composition, Dependency, etc.)"
+            },
+            "sourceMultiplicity": {
+              "type": "string",
+              "description": "Optional source multiplicity (e.g. '1', '0..*') — for Association, Aggregation, Composition only"
+            },
+            "targetMultiplicity": {
+              "type": "string",
+              "description": "Optional target multiplicity (e.g. '1', '0..*') — for Association, Aggregation, Composition only"
+            }
+          },
+          "required": ["filePath", "relationType", "sourceName", "targetName"]
+        }
+      },
+      {
+        "name": "biguml-remove-relation",
+        "displayName": "Remove UML Relation",
+        "modelDescription": "Removes a relationship between two elements in a UML diagram. Optionally filter by relation type when multiple relations exist between the same elements.",
+        "canBeReferencedInPrompt": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "filePath": {
+              "type": "string",
+              "description": "Workspace-relative path of the .uml file"
+            },
+            "sourceName": {
+              "type": "string",
+              "description": "Name of the source element"
+            },
+            "targetName": {
+              "type": "string",
+              "description": "Name of the target element"
+            },
+            "relationType": {
+              "type": "string",
+              "enum": ["Association", "Aggregation", "Composition", "Abstraction", "Dependency", "Generalization", "InterfaceRealization", "PackageImport", "PackageMerge", "Realization", "Substitution", "Usage"],
+              "description": "Optional: filter by relation type when multiple relations exist between the same elements"
+            }
+          },
+          "required": ["filePath", "sourceName", "targetName"]
+        }
       }
     ]
   },

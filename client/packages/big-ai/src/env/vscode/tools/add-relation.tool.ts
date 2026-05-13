@@ -1,0 +1,126 @@
+/*********************************************************************************
+ * Copyright (c) 2026 borkdominik and others.
+ *
+ * This program and the accompanying materials are made available under the
+ * terms of the MIT License which is available at https://opensource.org/licenses/MIT.
+ *
+ * SPDX-License-Identifier: MIT
+ *********************************************************************************/
+
+import { OutputChannel } from '@borkdominik-biguml/big-vscode/vscode';
+import { randomUUID } from 'crypto';
+import { inject, injectable } from 'inversify';
+import * as vscode from 'vscode';
+import type { AddRelationInput, UmlRelationType } from '../../common/index.js';
+import { createToolResult, resolveWorkspacePath } from './tool-utils.js';
+
+const RELATION_TYPE_MAP: Record<UmlRelationType, string> = {
+    Association: 'ASSOCIATION',
+    Aggregation: 'AGGREGATION',
+    Composition: 'COMPOSITION',
+    Abstraction: 'ABSTRACTION',
+    Dependency: 'DEPENDENCY',
+    Generalization: 'GENERALIZATION',
+    InterfaceRealization: 'INTERFACE_REALIZATION',
+    PackageImport: 'PACKAGE_IMPORT',
+    PackageMerge: 'PACKAGE_MERGE',
+    Realization: 'REALIZATION',
+    Substitution: 'SUBSTITUTION',
+    Usage: 'USAGE'
+};
+
+const MULTIPLICITY_TYPES = new Set<UmlRelationType>(['Association', 'Aggregation', 'Composition']);
+
+const NAMED_TYPES = new Set<UmlRelationType>([
+    'Association', 'Aggregation', 'Composition', 'Abstraction', 'Dependency',
+    'InterfaceRealization', 'Realization', 'Substitution', 'Usage'
+]);
+
+interface UmlNode {
+    __id: string;
+    name: string;
+    [key: string]: unknown;
+}
+
+interface UmlDiagramFile {
+    diagram: {
+        entities: UmlNode[];
+        relations: Record<string, unknown>[];
+    };
+    metaInfos: unknown[];
+}
+
+@injectable()
+export class AddRelationTool implements vscode.LanguageModelTool<AddRelationInput> {
+    constructor(@inject(OutputChannel) protected readonly outputChannel: OutputChannel) {}
+
+    async invoke(
+        options: vscode.LanguageModelToolInvocationOptions<AddRelationInput>,
+        token: vscode.CancellationToken
+    ): Promise<vscode.LanguageModelToolResult> {
+        void token;
+
+        const { filePath, relationType, sourceName, targetName, name, sourceMultiplicity, targetMultiplicity } = options.input;
+        this.outputChannel.appendLine(`[big-ai] AddRelationTool: ${relationType} from "${sourceName}" to "${targetName}" in ${filePath}`);
+
+        let uri: vscode.Uri;
+        try {
+            uri = resolveWorkspacePath(filePath);
+        } catch (e) {
+            return createToolResult(`Error: ${e instanceof Error ? e.message : String(e)}`);
+        }
+
+        let diagram: UmlDiagramFile;
+        try {
+            const raw = await vscode.workspace.fs.readFile(uri);
+            diagram = JSON.parse(Buffer.from(raw).toString('utf-8')) as UmlDiagramFile;
+        } catch {
+            return createToolResult(`Error: Could not read or parse file at ${filePath}`);
+        }
+
+        const sourceNode = diagram.diagram.entities.find(e => e.name === sourceName);
+        if (!sourceNode) {
+            return createToolResult(`Error: No element named "${sourceName}" found in ${filePath}`);
+        }
+
+        const targetNode = diagram.diagram.entities.find(e => e.name === targetName);
+        if (!targetNode) {
+            return createToolResult(`Error: No element named "${targetName}" found in ${filePath}`);
+        }
+
+        const id = generateId();
+        const ref = (nodeId: string) => ({ __type: 'Reference', __refType: 'Node', __value: nodeId });
+
+        const relation: Record<string, unknown> = {
+            __type: relationType,
+            __id: id,
+            source: ref(sourceNode.__id),
+            target: ref(targetNode.__id),
+            relationType: RELATION_TYPE_MAP[relationType]
+        };
+
+        if (NAMED_TYPES.has(relationType) && name !== undefined) {
+            relation['name'] = name;
+        }
+
+        if (MULTIPLICITY_TYPES.has(relationType)) {
+            if (sourceMultiplicity !== undefined) relation['sourceMultiplicity'] = sourceMultiplicity;
+            if (targetMultiplicity !== undefined) relation['targetMultiplicity'] = targetMultiplicity;
+        }
+
+        if (relationType === 'Generalization') {
+            relation['isSubstitutable'] = false;
+        }
+
+        diagram.diagram.relations.push(relation);
+        await vscode.workspace.fs.writeFile(uri, Buffer.from(JSON.stringify(diagram, null, '\t'), 'utf-8'));
+
+        this.outputChannel.appendLine(`[big-ai] Added ${relationType} from "${sourceName}" to "${targetName}" (id: ${id})`);
+        return createToolResult(`Added ${relationType} from "${sourceName}" to "${targetName}" (id: ${id}) in ${filePath}`);
+    }
+}
+
+function generateId(): string {
+    const uuid = randomUUID();
+    return `a${uuid.substring(1)}`;
+}

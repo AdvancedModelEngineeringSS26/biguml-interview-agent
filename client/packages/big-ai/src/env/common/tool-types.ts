@@ -14,7 +14,53 @@ export interface DummyToolInput {
 export type CommandType = 'interview' | 'modify' | 'explain' | 'default';
 
 export interface ParsedCommand {
-  type: CommandType;
-  argument: string;
+    type: CommandType;
+    argument: string;
+}
+
+export type UmlNodeType = 'Class' | 'AbstractClass' | 'Interface' | 'Enumeration' | 'Package' | 'DataType' | 'PrimitiveType';
+
+export type UmlRelationType =
+    | 'Association' | 'Aggregation' | 'Composition'
+    | 'Abstraction' | 'Dependency' | 'Generalization'
+    | 'InterfaceRealization' | 'PackageImport' | 'PackageMerge'
+    | 'Realization' | 'Substitution' | 'Usage';
+
+export interface CreateUmlFileInput {
+    filePath: string;
+    diagramType: 'CLASS';
+}
+
+export interface ReadUmlFileInput {
+    filePath: string;
+}
+
+export interface AddNodeInput {
+    filePath: string;
+    elementType: UmlNodeType;
+    name: string;
+    properties?: Record<string, unknown>;
+}
+
+export interface RemoveNodeInput {
+    filePath: string;
+    elementName: string;
+}
+
+export interface AddRelationInput {
+    filePath: string;
+    relationType: UmlRelationType;
+    sourceName: string;
+    targetName: string;
+    name?: string;
+    sourceMultiplicity?: string;
+    targetMultiplicity?: string;
+}
+
+export interface RemoveRelationInput {
+    filePath: string;
+    sourceName: string;
+    targetName: string;
+    relationType?: UmlRelationType;
 }
 
