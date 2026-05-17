@@ -75,6 +75,75 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         return defaults[command.type] ?? request.prompt;
     }
 
+    protected async buildReferenceMessages(
+        request: vscode.ChatRequest
+    ): Promise<vscode.LanguageModelChatMessage[]> {
+        const MAX_REFERENCE_CHARS = 30_000;
+        const messages: vscode.LanguageModelChatMessage[] = [];
+
+        for (const ref of request.references) {
+            const label = ref.name ?? ref.id;
+            try {
+                const resolved = await this.resolveReferenceContent(ref);
+                if (resolved === undefined) {
+                    this.outputChannel.appendLine(`[big-ai] Reference ${label}: unsupported value type, skipped`);
+                    continue;
+                }
+
+                const { content, source } = resolved;
+                const truncated = content.length > MAX_REFERENCE_CHARS;
+                const payload = truncated
+                    ? `${content.slice(0, MAX_REFERENCE_CHARS)}\n…[truncated, original length: ${content.length} chars]`
+                    : content;
+
+                this.outputChannel.appendLine(
+                    `[big-ai] Reference ${label} resolved from ${source} (${content.length} chars${truncated ? ', truncated' : ''})`
+                );
+
+                messages.push(
+                    vscode.LanguageModelChatMessage.User(
+                        `[Attached reference: ${label}${source ? ` (${source})` : ''}]\n${payload}`
+                    )
+                );
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                this.outputChannel.appendLine(`[big-ai] Reference ${label} failed to resolve: ${message}`);
+                messages.push(
+                    vscode.LanguageModelChatMessage.User(
+                        `[Attached reference: ${label}]\n(Failed to read content: ${message})`
+                    )
+                );
+            }
+        }
+
+        return messages;
+    }
+
+    protected async resolveReferenceContent(
+        ref: vscode.ChatPromptReference
+    ): Promise<{ content: string; source: string } | undefined> {
+        const { value } = ref;
+
+        if (value instanceof vscode.Uri) {
+            const bytes = await vscode.workspace.fs.readFile(value);
+            return { content: new TextDecoder().decode(bytes), source: value.fsPath };
+        }
+
+        if (value instanceof vscode.Location) {
+            const document = await vscode.workspace.openTextDocument(value.uri);
+            return {
+                content: document.getText(value.range),
+                source: `${value.uri.fsPath}:${value.range.start.line + 1}-${value.range.end.line + 1}`
+            };
+        }
+
+        if (typeof value === 'string') {
+            return { content: value, source: 'inline' };
+        }
+
+        return undefined;
+    }
+
 
     protected async handleRequest(
         request: vscode.ChatRequest,
@@ -100,11 +169,13 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         }
 
         const historyMessages = this.buildHistoryMessages(context);
+        const referenceMessages = await this.buildReferenceMessages(request);
 
         const messages: vscode.LanguageModelChatMessage[] = [
-            vscode.LanguageModelChatMessage.User(this.buildSystemMessage(request, parsedCommand)), 
-            ...historyMessages,                                                                     
-            vscode.LanguageModelChatMessage.User(this.buildUserMessage(request, parsedCommand))   
+            vscode.LanguageModelChatMessage.User(this.buildSystemMessage(request, parsedCommand)),
+            ...historyMessages,
+            ...referenceMessages,
+            vscode.LanguageModelChatMessage.User(this.buildUserMessage(request, parsedCommand))
         ];
 
         let toolUsed = false;
@@ -338,11 +409,9 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                                 };
 
         const modeContext = commandContexts[command.type] || commandContexts['default'];
-        
-        const referenceInfo = request.references.length > 0 
-            ? `Attached references: ${request.references.length} file(s) or context available for analysis.`
-            : 'No attached references.';
-        
+
+        const referenceInfo = this.describeReferences(request);
+
         return `${SYSTEM_PROMPT}
 
 ---
@@ -352,8 +421,35 @@ ${modeContext}
 ---
 
 ## Context Information
-- ${referenceInfo}`;
+${referenceInfo}
+
+## Reference Handling
+When the user attaches references via chat variables such as \`#file:...\` or \`#selection\`, their content is appended to this conversation as messages labeled \`[Attached reference: <name>]\`. Treat that content as authoritative context for the user's current request, and quote element names or excerpts from it when relevant.`;
 }
+
+    protected describeReferences(request: vscode.ChatRequest): string {
+        if (request.references.length === 0) {
+            return '- No attached references.';
+        }
+
+        const lines = request.references.map(ref => {
+            const label = ref.name ?? ref.id;
+            const { value } = ref;
+            if (value instanceof vscode.Uri) {
+                return `- ${label} → file: \`${value.fsPath}\``;
+            }
+            if (value instanceof vscode.Location) {
+                const r = value.range;
+                return `- ${label} → selection: \`${value.uri.fsPath}\` lines ${r.start.line + 1}-${r.end.line + 1}`;
+            }
+            if (typeof value === 'string') {
+                return `- ${label} → inline string (${value.length} chars)`;
+            }
+            return `- ${label} → unsupported reference type`;
+        });
+
+        return `Attached references (${request.references.length}):\n${lines.join('\n')}`;
+    }
 
 
     dispose(): void {
