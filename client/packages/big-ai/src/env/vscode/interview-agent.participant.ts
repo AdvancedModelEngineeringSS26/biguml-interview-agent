@@ -119,6 +119,78 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         return messages;
     }
 
+    protected getActiveUmlUri(): vscode.Uri | undefined {
+        const activeTab = vscode.window.tabGroups.activeTabGroup?.activeTab;
+        if (!activeTab) {
+            return undefined;
+        }
+
+        const input = activeTab.input;
+        let uri: vscode.Uri | undefined;
+        if (input instanceof vscode.TabInputText) {
+            uri = input.uri;
+        } else if (input instanceof vscode.TabInputCustom) {
+            uri = input.uri;
+        } else if (input instanceof vscode.TabInputNotebook) {
+            uri = input.uri;
+        }
+
+        if (!uri || !uri.path.toLowerCase().endsWith('.uml')) {
+            return undefined;
+        }
+        return uri;
+    }
+
+    protected async buildAutoAttachMessages(
+        request: vscode.ChatRequest
+    ): Promise<vscode.LanguageModelChatMessage[]> {
+        const MAX_CONTENT_CHARS = 30_000;
+        const activeUri = this.getActiveUmlUri();
+        if (!activeUri) {
+            return [];
+        }
+
+        const alreadyAttached = request.references.some(ref => {
+            const v = ref.value;
+            if (v instanceof vscode.Uri) {
+                return v.toString() === activeUri.toString();
+            }
+            if (v instanceof vscode.Location) {
+                return v.uri.toString() === activeUri.toString();
+            }
+            return false;
+        });
+        if (alreadyAttached) {
+            this.outputChannel.appendLine(
+                `[big-ai] Active UML file ${activeUri.fsPath} already explicitly referenced, skipping auto-attach`
+            );
+            return [];
+        }
+
+        try {
+            const bytes = await vscode.workspace.fs.readFile(activeUri);
+            const content = new TextDecoder().decode(bytes);
+            const truncated = content.length > MAX_CONTENT_CHARS;
+            const payload = truncated
+                ? `${content.slice(0, MAX_CONTENT_CHARS)}\n…[truncated, original length: ${content.length} chars]`
+                : content;
+
+            this.outputChannel.appendLine(
+                `[big-ai] Auto-attached active UML file ${activeUri.fsPath} (${content.length} chars${truncated ? ', truncated' : ''})`
+            );
+
+            return [
+                vscode.LanguageModelChatMessage.User(
+                    `[Auto-attached active UML diagram: ${activeUri.fsPath}]\n${payload}`
+                )
+            ];
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            this.outputChannel.appendLine(`[big-ai] Failed to auto-attach active UML file: ${message}`);
+            return [];
+        }
+    }
+
     protected async resolveReferenceContent(
         ref: vscode.ChatPromptReference
     ): Promise<{ content: string; source: string } | undefined> {
@@ -170,11 +242,13 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
 
         const historyMessages = this.buildHistoryMessages(context);
         const referenceMessages = await this.buildReferenceMessages(request);
+        const autoAttachMessages = await this.buildAutoAttachMessages(request);
 
         const messages: vscode.LanguageModelChatMessage[] = [
             vscode.LanguageModelChatMessage.User(this.buildSystemMessage(request, parsedCommand)),
             ...historyMessages,
             ...referenceMessages,
+            ...autoAttachMessages,
             vscode.LanguageModelChatMessage.User(this.buildUserMessage(request, parsedCommand))
         ];
 
@@ -411,6 +485,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         const modeContext = commandContexts[command.type] || commandContexts['default'];
 
         const referenceInfo = this.describeReferences(request);
+        const activeDiagramInfo = this.describeActiveDiagram(request);
 
         return `${SYSTEM_PROMPT}
 
@@ -422,10 +497,33 @@ ${modeContext}
 
 ## Context Information
 ${referenceInfo}
+${activeDiagramInfo}
 
 ## Reference Handling
-When the user attaches references via chat variables such as \`#file:...\` or \`#selection\`, their content is appended to this conversation as messages labeled \`[Attached reference: <name>]\`. Treat that content as authoritative context for the user's current request, and quote element names or excerpts from it when relevant.`;
+When the user attaches references via chat variables such as \`#file:...\` or \`#selection\`, their content is appended to this conversation as messages labeled \`[Attached reference: <name>]\`. Treat that content as authoritative context for the user's current request, and quote element names or excerpts from it when relevant.
+
+If a message labeled \`[Auto-attached active UML diagram: <path>]\` appears, the user has that diagram open in their editor. Use it as context when the user's question is about "this diagram", "the current model", or makes no other file reference. If the question is purely conceptual (e.g. "/explain what is a class diagram"), you may ignore the auto-attached content.`;
 }
+
+    protected describeActiveDiagram(request: vscode.ChatRequest): string {
+        const activeUri = this.getActiveUmlUri();
+        if (!activeUri) {
+            return '- No active UML diagram detected in the editor.';
+        }
+        const alreadyAttached = request.references.some(ref => {
+            const v = ref.value;
+            if (v instanceof vscode.Uri) {
+                return v.toString() === activeUri.toString();
+            }
+            if (v instanceof vscode.Location) {
+                return v.uri.toString() === activeUri.toString();
+            }
+            return false;
+        });
+        return alreadyAttached
+            ? `- Active UML diagram in editor: \`${activeUri.fsPath}\` (also explicitly referenced).`
+            : `- Active UML diagram in editor: \`${activeUri.fsPath}\` (auto-attached below).`;
+    }
 
     protected describeReferences(request: vscode.ChatRequest): string {
         if (request.references.length === 0) {
