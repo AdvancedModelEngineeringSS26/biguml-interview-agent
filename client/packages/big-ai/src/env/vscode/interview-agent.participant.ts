@@ -119,6 +119,27 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         return messages;
     }
 
+    protected async selectModel(): Promise<vscode.LanguageModelChat | undefined> {
+        const config = vscode.workspace.getConfiguration('bigUML.ai');
+        const vendor = config.get<string>('modelVendor')?.trim() || 'copilot';
+        const family = config.get<string>('modelFamily')?.trim() || 'gpt-4o';
+
+        const requested = await vscode.lm.selectChatModels({ vendor, family });
+        if (requested.length > 0) {
+            return requested[0];
+        }
+        this.outputChannel.appendLine(
+            `[big-ai] Requested model ${vendor}/${family} not available, falling back to any available model`
+        );
+
+        const sameVendor = await vscode.lm.selectChatModels({ vendor });
+        if (sameVendor.length > 0) {
+            return sameVendor[0];
+        }
+        const anyModel = await vscode.lm.selectChatModels();
+        return anyModel[0];
+    }
+
     protected getActiveUmlUri(): vscode.Uri | undefined {
         const activeTab = vscode.window.tabGroups.activeTabGroup?.activeTab;
         if (!activeTab) {
@@ -228,9 +249,9 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         this.outputChannel.appendLine(`[big-ai] Command type: ${parsedCommand.type}`);
         this.outputChannel.appendLine(`[big-ai] Conversation turn: ${context.history.length + 1}`);
 
-        const [model] = await vscode.lm.selectChatModels({ vendor: 'copilot', family: 'gpt-4o' });
+        const model = await this.selectModel();
         if (!model) {
-            stream.markdown('**Error**: No compatible chat model (GPT-4o) is available. Please ensure Copilot Chat is installed and authenticated.');
+            stream.markdown('**Error**: No compatible chat model is available. Please ensure Copilot Chat is installed and authenticated, or change `bigUML.ai.modelVendor` / `bigUML.ai.modelFamily` in settings.');
             return {
                 metadata: {
                     command: parsedCommand.type,
@@ -239,6 +260,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                 }
             };
         }
+        this.outputChannel.appendLine(`[big-ai] Using model: ${model.vendor}/${model.family} (${model.name})`);
 
         const historyMessages = this.buildHistoryMessages(context);
         const referenceMessages = await this.buildReferenceMessages(request);
@@ -317,6 +339,10 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
             if (!responseStreamed) {
                 stream.markdown(`**Error**: ${error instanceof Error ? error.message : 'Unknown error occurred'}`);
             }
+        }
+
+        if (responseStreamed) {
+            stream.markdown(`\n\n---\n_via ${model.vendor}/${model.family}_`);
         }
 
         this.outputChannel.appendLine(`[big-ai] Response complete (tool_used: ${toolUsed})`);
