@@ -82,7 +82,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         const messages: vscode.LanguageModelChatMessage[] = [];
 
         for (const ref of request.references) {
-            const label = ref.name ?? ref.id;
+            const label = ref.id;
             try {
                 const resolved = await this.resolveReferenceContent(ref);
                 if (resolved === undefined) {
@@ -433,7 +433,7 @@ When the user attaches references via chat variables such as \`#file:...\` or \`
         }
 
         const lines = request.references.map(ref => {
-            const label = ref.name ?? ref.id;
+            const label = ref.id;
             const { value } = ref;
             if (value instanceof vscode.Uri) {
                 return `- ${label} → file: \`${value.fsPath}\``;
