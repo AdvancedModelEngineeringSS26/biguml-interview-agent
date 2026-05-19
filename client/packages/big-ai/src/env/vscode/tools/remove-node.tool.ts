@@ -11,7 +11,7 @@ import { OutputChannel } from '@borkdominik-biguml/big-vscode/vscode';
 import { inject, injectable } from 'inversify';
 import * as vscode from 'vscode';
 import type { RemoveNodeInput } from '../../common/index.js';
-import { createToolResult, resolveWorkspacePath } from './tool-utils.js';
+import { createToolResult, resolveWorkspacePath, validateRequiredString, validateUmlDiagramFile } from './tool-utils.js';
 
 interface UmlNode {
     __type: string;
@@ -52,9 +52,11 @@ export class RemoveNodeTool implements vscode.LanguageModelTool<RemoveNodeInput>
         const { filePath, elementName } = options.input;
         this.outputChannel.appendLine(`[big-ai] RemoveNodeTool: "${elementName}" from ${filePath}`);
 
+        let name: string;
         let uri: vscode.Uri;
         try {
-            uri = resolveWorkspacePath(filePath);
+            name = validateRequiredString(elementName, 'elementName');
+            uri = resolveWorkspacePath(filePath, { requireUmlExtension: true });
         } catch (e) {
             return createToolResult(`Error: ${e instanceof Error ? e.message : String(e)}`);
         }
@@ -62,14 +64,16 @@ export class RemoveNodeTool implements vscode.LanguageModelTool<RemoveNodeInput>
         let diagram: UmlDiagramFile;
         try {
             const raw = await vscode.workspace.fs.readFile(uri);
-            diagram = JSON.parse(Buffer.from(raw).toString('utf-8')) as UmlDiagramFile;
-        } catch {
-            return createToolResult(`Error: Could not read or parse file at ${filePath}`);
+            const parsed = JSON.parse(Buffer.from(raw).toString('utf-8'));
+            validateUmlDiagramFile(parsed);
+            diagram = parsed as UmlDiagramFile;
+        } catch (e) {
+            return createToolResult(`Error: Could not read or parse file at ${filePath}: ${e instanceof Error ? e.message : String(e)}`);
         }
 
-        const index = diagram.diagram.entities.findIndex(e => e.name === elementName);
+        const index = diagram.diagram.entities.findIndex(e => e.name === name);
         if (index === -1) {
-            return createToolResult(`Error: No element named "${elementName}" found in ${filePath}`);
+            return createToolResult(`Error: No element named "${name}" found in ${filePath}`);
         }
 
         const elementId = diagram.diagram.entities[index].__id;
@@ -79,8 +83,8 @@ export class RemoveNodeTool implements vscode.LanguageModelTool<RemoveNodeInput>
             'biguml.operations.deleteElement', filePath, elementId
         );
         if (glspSuccess === true) {
-            this.outputChannel.appendLine(`[big-ai] Removed "${elementName}" via GLSP operation`);
-            return createToolResult(`Removed "${elementName}" from ${filePath}`);
+            this.outputChannel.appendLine(`[big-ai] Removed "${name}" via GLSP operation`);
+            return createToolResult(`Removed "${name}" from ${filePath}`);
         }
 
         // Fallback: write directly to file (diagram not open)
@@ -99,7 +103,7 @@ export class RemoveNodeTool implements vscode.LanguageModelTool<RemoveNodeInput>
 
         await vscode.workspace.fs.writeFile(uri, Buffer.from(JSON.stringify(diagram, null, '\t'), 'utf-8'));
 
-        this.outputChannel.appendLine(`[big-ai] Removed "${elementName}" (id: ${removedId}) via file write`);
-        return createToolResult(`Removed "${elementName}" from ${filePath}`);
+        this.outputChannel.appendLine(`[big-ai] Removed "${name}" (id: ${removedId}) via file write`);
+        return createToolResult(`Removed "${name}" from ${filePath}`);
     }
 }

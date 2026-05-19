@@ -11,7 +11,7 @@ import { OutputChannel } from '@borkdominik-biguml/big-vscode/vscode';
 import { inject, injectable } from 'inversify';
 import * as vscode from 'vscode';
 import type { RemoveRelationInput } from '../../common/index.js';
-import { createToolResult, resolveWorkspacePath } from './tool-utils.js';
+import { createToolResult, resolveWorkspacePath, validateRequiredString, validateUmlDiagramFile } from './tool-utils.js';
 
 interface UmlNode {
     __id: string;
@@ -48,9 +48,13 @@ export class RemoveRelationTool implements vscode.LanguageModelTool<RemoveRelati
         const { filePath, sourceName, targetName, relationType } = options.input;
         this.outputChannel.appendLine(`[big-ai] RemoveRelationTool: relation from "${sourceName}" to "${targetName}" in ${filePath}`);
 
+        let sourceElementName: string;
+        let targetElementName: string;
         let uri: vscode.Uri;
         try {
-            uri = resolveWorkspacePath(filePath);
+            sourceElementName = validateRequiredString(sourceName, 'sourceName');
+            targetElementName = validateRequiredString(targetName, 'targetName');
+            uri = resolveWorkspacePath(filePath, { requireUmlExtension: true });
         } catch (e) {
             return createToolResult(`Error: ${e instanceof Error ? e.message : String(e)}`);
         }
@@ -58,19 +62,21 @@ export class RemoveRelationTool implements vscode.LanguageModelTool<RemoveRelati
         let diagram: UmlDiagramFile;
         try {
             const raw = await vscode.workspace.fs.readFile(uri);
-            diagram = JSON.parse(Buffer.from(raw).toString('utf-8')) as UmlDiagramFile;
-        } catch {
-            return createToolResult(`Error: Could not read or parse file at ${filePath}`);
+            const parsed = JSON.parse(Buffer.from(raw).toString('utf-8'));
+            validateUmlDiagramFile(parsed);
+            diagram = parsed as UmlDiagramFile;
+        } catch (e) {
+            return createToolResult(`Error: Could not read or parse file at ${filePath}: ${e instanceof Error ? e.message : String(e)}`);
         }
 
-        const sourceNode = diagram.diagram.entities.find(e => e.name === sourceName);
+        const sourceNode = diagram.diagram.entities.find(e => e.name === sourceElementName);
         if (!sourceNode) {
-            return createToolResult(`Error: No element named "${sourceName}" found in ${filePath}`);
+            return createToolResult(`Error: No element named "${sourceElementName}" found in ${filePath}`);
         }
 
-        const targetNode = diagram.diagram.entities.find(e => e.name === targetName);
+        const targetNode = diagram.diagram.entities.find(e => e.name === targetElementName);
         if (!targetNode) {
-            return createToolResult(`Error: No element named "${targetName}" found in ${filePath}`);
+            return createToolResult(`Error: No element named "${targetElementName}" found in ${filePath}`);
         }
 
         const index = diagram.diagram.relations.findIndex(r => {
@@ -82,7 +88,7 @@ export class RemoveRelationTool implements vscode.LanguageModelTool<RemoveRelati
 
         if (index === -1) {
             const typeHint = relationType ? ` of type ${relationType}` : '';
-            return createToolResult(`Error: No relation${typeHint} from "${sourceName}" to "${targetName}" found in ${filePath}`);
+            return createToolResult(`Error: No relation${typeHint} from "${sourceElementName}" to "${targetElementName}" found in ${filePath}`);
         }
 
         const relation = diagram.diagram.relations[index];
@@ -92,15 +98,15 @@ export class RemoveRelationTool implements vscode.LanguageModelTool<RemoveRelati
             'biguml.operations.deleteElement', filePath, relation.__id
         );
         if (glspSuccess === true) {
-            this.outputChannel.appendLine(`[big-ai] Removed ${relation.__type} from "${sourceName}" to "${targetName}" via GLSP operation`);
-            return createToolResult(`Removed ${relation.__type} from "${sourceName}" to "${targetName}" in ${filePath}`);
+            this.outputChannel.appendLine(`[big-ai] Removed ${relation.__type} from "${sourceElementName}" to "${targetElementName}" via GLSP operation`);
+            return createToolResult(`Removed ${relation.__type} from "${sourceElementName}" to "${targetElementName}" in ${filePath}`);
         }
 
         // Fallback: write directly to file (diagram not open)
         const [removed] = diagram.diagram.relations.splice(index, 1);
         await vscode.workspace.fs.writeFile(uri, Buffer.from(JSON.stringify(diagram, null, '\t'), 'utf-8'));
 
-        this.outputChannel.appendLine(`[big-ai] Removed ${removed.__type} from "${sourceName}" to "${targetName}" (id: ${removed.__id}) via file write`);
-        return createToolResult(`Removed ${removed.__type} from "${sourceName}" to "${targetName}" in ${filePath}`);
+        this.outputChannel.appendLine(`[big-ai] Removed ${removed.__type} from "${sourceElementName}" to "${targetElementName}" (id: ${removed.__id}) via file write`);
+        return createToolResult(`Removed ${removed.__type} from "${sourceElementName}" to "${targetElementName}" in ${filePath}`);
     }
 }

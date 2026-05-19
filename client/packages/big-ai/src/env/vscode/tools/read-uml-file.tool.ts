@@ -28,7 +28,7 @@ export class ReadUmlFileTool implements vscode.LanguageModelTool<ReadUmlFileInpu
 
         let uri: vscode.Uri;
         try {
-            uri = resolveWorkspacePath(filePath);
+            uri = resolveWorkspacePath(filePath, { requireUmlExtension: true });
         } catch (e) {
             return createToolResult(`Error: ${e instanceof Error ? e.message : String(e)}`);
         }

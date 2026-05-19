@@ -12,7 +12,7 @@ import { randomUUID } from 'crypto';
 import { inject, injectable } from 'inversify';
 import * as vscode from 'vscode';
 import type { AddRelationInput, UmlRelationType } from '../../common/index.js';
-import { createToolResult, resolveWorkspacePath } from './tool-utils.js';
+import { createToolResult, resolveWorkspacePath, validateRequiredString, validateUmlDiagramFile } from './tool-utils.js';
 
 // Maps UmlRelationType to the GLSP element type ID used in CreateEdgeOperation
 const GLSP_EDGE_TYPE_ID: Record<UmlRelationType, string> = {
@@ -80,9 +80,20 @@ export class AddRelationTool implements vscode.LanguageModelTool<AddRelationInpu
         const { filePath, relationType, sourceName, targetName, name, sourceMultiplicity, targetMultiplicity } = options.input;
         this.outputChannel.appendLine(`[big-ai] AddRelationTool: ${relationType} from "${sourceName}" to "${targetName}" in ${filePath}`);
 
+        let sourceElementName: string;
+        let targetElementName: string;
+        let relationName: string | undefined;
         let uri: vscode.Uri;
         try {
-            uri = resolveWorkspacePath(filePath);
+            sourceElementName = validateRequiredString(sourceName, 'sourceName');
+            targetElementName = validateRequiredString(targetName, 'targetName');
+            relationName = name === undefined ? undefined : validateRequiredString(name, 'name');
+            if (!Object.prototype.hasOwnProperty.call(GLSP_EDGE_TYPE_ID, relationType)) {
+                throw new Error(`Unsupported relationType "${String(relationType)}".`);
+            }
+            if (sourceMultiplicity !== undefined) validateRequiredString(sourceMultiplicity, 'sourceMultiplicity');
+            if (targetMultiplicity !== undefined) validateRequiredString(targetMultiplicity, 'targetMultiplicity');
+            uri = resolveWorkspacePath(filePath, { requireUmlExtension: true });
         } catch (e) {
             return createToolResult(`Error: ${e instanceof Error ? e.message : String(e)}`);
         }
@@ -90,30 +101,32 @@ export class AddRelationTool implements vscode.LanguageModelTool<AddRelationInpu
         let diagram: UmlDiagramFile;
         try {
             const raw = await vscode.workspace.fs.readFile(uri);
-            diagram = JSON.parse(Buffer.from(raw).toString('utf-8')) as UmlDiagramFile;
-        } catch {
-            return createToolResult(`Error: Could not read or parse file at ${filePath}`);
+            const parsed = JSON.parse(Buffer.from(raw).toString('utf-8'));
+            validateUmlDiagramFile(parsed);
+            diagram = parsed as UmlDiagramFile;
+        } catch (e) {
+            return createToolResult(`Error: Could not read or parse file at ${filePath}: ${e instanceof Error ? e.message : String(e)}`);
         }
 
-        const sourceNode = diagram.diagram.entities.find(e => e.name === sourceName);
+        const sourceNode = diagram.diagram.entities.find(e => e.name === sourceElementName);
         if (!sourceNode) {
-            return createToolResult(`Error: No element named "${sourceName}" found in ${filePath}`);
+            return createToolResult(`Error: No element named "${sourceElementName}" found in ${filePath}`);
         }
 
-        const targetNode = diagram.diagram.entities.find(e => e.name === targetName);
+        const targetNode = diagram.diagram.entities.find(e => e.name === targetElementName);
         if (!targetNode) {
-            return createToolResult(`Error: No element named "${targetName}" found in ${filePath}`);
+            return createToolResult(`Error: No element named "${targetElementName}" found in ${filePath}`);
         }
 
         // Try GLSP operation first so the diagram updates immediately
         const elementTypeId = GLSP_EDGE_TYPE_ID[relationType];
         const glspSuccess = await vscode.commands.executeCommand<boolean>(
             'biguml.operations.createEdge', filePath, elementTypeId, sourceNode.__id, targetNode.__id,
-            NAMED_TYPES.has(relationType) ? name : undefined
+            NAMED_TYPES.has(relationType) ? relationName : undefined
         );
         if (glspSuccess === true) {
-            this.outputChannel.appendLine(`[big-ai] Added ${relationType} from "${sourceName}" to "${targetName}" via GLSP operation`);
-            return createToolResult(`Added ${relationType} from "${sourceName}" to "${targetName}" in ${filePath}`);
+            this.outputChannel.appendLine(`[big-ai] Added ${relationType} from "${sourceElementName}" to "${targetElementName}" via GLSP operation`);
+            return createToolResult(`Added ${relationType} from "${sourceElementName}" to "${targetElementName}" in ${filePath}`);
         }
 
         // Fallback: write directly to file (diagram not open)
@@ -128,8 +141,8 @@ export class AddRelationTool implements vscode.LanguageModelTool<AddRelationInpu
             relationType: RELATION_TYPE_MAP[relationType]
         };
 
-        if (NAMED_TYPES.has(relationType) && name !== undefined) {
-            relation['name'] = name;
+        if (NAMED_TYPES.has(relationType) && relationName !== undefined) {
+            relation['name'] = relationName;
         }
 
         if (MULTIPLICITY_TYPES.has(relationType)) {
@@ -144,8 +157,8 @@ export class AddRelationTool implements vscode.LanguageModelTool<AddRelationInpu
         diagram.diagram.relations.push(relation);
         await vscode.workspace.fs.writeFile(uri, Buffer.from(JSON.stringify(diagram, null, '\t'), 'utf-8'));
 
-        this.outputChannel.appendLine(`[big-ai] Added ${relationType} from "${sourceName}" to "${targetName}" (id: ${id}) via file write`);
-        return createToolResult(`Added ${relationType} from "${sourceName}" to "${targetName}" (id: ${id}) in ${filePath}`);
+        this.outputChannel.appendLine(`[big-ai] Added ${relationType} from "${sourceElementName}" to "${targetElementName}" (id: ${id}) via file write`);
+        return createToolResult(`Added ${relationType} from "${sourceElementName}" to "${targetElementName}" (id: ${id}) in ${filePath}`);
     }
 }
 

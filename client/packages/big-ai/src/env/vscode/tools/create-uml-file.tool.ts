@@ -11,7 +11,7 @@ import { OutputChannel } from '@borkdominik-biguml/big-vscode/vscode';
 import { inject, injectable } from 'inversify';
 import * as vscode from 'vscode';
 import type { CreateUmlFileInput } from '../../common/index.js';
-import { createToolResult, resolveWorkspacePath } from './tool-utils.js';
+import { createToolResult, resolveWorkspacePath, validateRequiredString } from './tool-utils.js';
 
 @injectable()
 export class CreateUmlFileTool implements vscode.LanguageModelTool<CreateUmlFileInput> {
@@ -28,8 +28,12 @@ export class CreateUmlFileTool implements vscode.LanguageModelTool<CreateUmlFile
 
         let uri: vscode.Uri;
         try {
-            const normalized = filePath.endsWith('.uml') ? filePath : `${filePath}.uml`;
-            uri = resolveWorkspacePath(normalized);
+            if (diagramType !== 'CLASS') {
+                throw new Error('diagramType must be CLASS.');
+            }
+            const requestedPath = validateRequiredString(filePath, 'filePath');
+            const normalized = requestedPath.toLowerCase().endsWith('.uml') ? requestedPath : `${requestedPath}.uml`;
+            uri = resolveWorkspacePath(normalized, { requireUmlExtension: true });
         } catch (e) {
             return createToolResult(`Error: ${e instanceof Error ? e.message : String(e)}`);
         }

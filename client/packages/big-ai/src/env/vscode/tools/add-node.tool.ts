@@ -12,7 +12,7 @@ import { randomUUID } from 'crypto';
 import { inject, injectable } from 'inversify';
 import * as vscode from 'vscode';
 import type { AddNodeInput, UmlNodeType } from '../../common/index.js';
-import { createToolResult, resolveWorkspacePath } from './tool-utils.js';
+import { createToolResult, resolveWorkspacePath, validateRequiredString, validateUmlDiagramFile } from './tool-utils.js';
 
 interface UmlNode {
     __type: string;
@@ -69,9 +69,17 @@ export class AddNodeTool implements vscode.LanguageModelTool<AddNodeInput> {
         const { filePath, elementType, name, properties } = options.input;
         this.outputChannel.appendLine(`[big-ai] AddNodeTool: ${elementType} "${name}" -> ${filePath}`);
 
+        let elementName: string;
         let uri: vscode.Uri;
         try {
-            uri = resolveWorkspacePath(filePath);
+            elementName = validateRequiredString(name, 'name');
+            if (!Object.prototype.hasOwnProperty.call(NODE_TYPE_ID, elementType)) {
+                throw new Error(`Unsupported elementType "${String(elementType)}".`);
+            }
+            if (properties !== undefined && (typeof properties !== 'object' || properties === null || Array.isArray(properties))) {
+                throw new Error('properties must be an object when provided.');
+            }
+            uri = resolveWorkspacePath(filePath, { requireUmlExtension: true });
         } catch (e) {
             return createToolResult(`Error: ${e instanceof Error ? e.message : String(e)}`);
         }
@@ -79,14 +87,16 @@ export class AddNodeTool implements vscode.LanguageModelTool<AddNodeInput> {
         let diagram: UmlDiagramFile;
         try {
             const raw = await vscode.workspace.fs.readFile(uri);
-            diagram = JSON.parse(Buffer.from(raw).toString('utf-8')) as UmlDiagramFile;
-        } catch {
-            return createToolResult(`Error: Could not read or parse file at ${filePath}`);
+            const parsed = JSON.parse(Buffer.from(raw).toString('utf-8'));
+            validateUmlDiagramFile(parsed);
+            diagram = parsed as UmlDiagramFile;
+        } catch (e) {
+            return createToolResult(`Error: Could not read or parse file at ${filePath}: ${e instanceof Error ? e.message : String(e)}`);
         }
 
-        const existing = diagram.diagram.entities.find(e => e.name === name);
+        const existing = diagram.diagram.entities.find(e => e.name === elementName);
         if (existing) {
-            return createToolResult(`Error: An element named "${name}" already exists in the diagram.`);
+            return createToolResult(`Error: An element named "${elementName}" already exists in the diagram.`);
         }
 
         // Compute position for the new node
@@ -100,17 +110,17 @@ export class AddNodeTool implements vscode.LanguageModelTool<AddNodeInput> {
         if (BOUNDED_TYPES.has(elementType)) {
             const elementTypeId = NODE_TYPE_ID[elementType];
             const glspSuccess = await vscode.commands.executeCommand<boolean>(
-                'biguml.operations.createNode', filePath, elementTypeId, name, x, y
+                'biguml.operations.createNode', filePath, elementTypeId, elementName, x, y
             );
             if (glspSuccess === true) {
-                this.outputChannel.appendLine(`[big-ai] Added ${elementType} "${name}" via GLSP operation`);
-                return createToolResult(`Added ${elementType} "${name}" to ${filePath}`);
+                this.outputChannel.appendLine(`[big-ai] Added ${elementType} "${elementName}" via GLSP operation`);
+                return createToolResult(`Added ${elementType} "${elementName}" to ${filePath}`);
             }
         }
 
         // Fallback: write directly to file (diagram not open or unbounded type)
         const id = generateId();
-        const node = buildNode(elementType, id, name, properties);
+        const node = buildNode(elementType, id, elementName, properties);
         diagram.diagram.entities.push(node);
 
         if (BOUNDED_TYPES.has(elementType)) {
@@ -134,8 +144,8 @@ export class AddNodeTool implements vscode.LanguageModelTool<AddNodeInput> {
 
         await vscode.workspace.fs.writeFile(uri, Buffer.from(JSON.stringify(diagram, null, '\t'), 'utf-8'));
 
-        this.outputChannel.appendLine(`[big-ai] Added ${elementType} "${name}" (id: ${id}) via file write`);
-        return createToolResult(`Added ${elementType} "${name}" (id: ${id}) to ${filePath}`);
+        this.outputChannel.appendLine(`[big-ai] Added ${elementType} "${elementName}" (id: ${id}) via file write`);
+        return createToolResult(`Added ${elementType} "${elementName}" (id: ${id}) to ${filePath}`);
     }
 }
 
