@@ -48,7 +48,10 @@
     "watch:compile": "npm run compile -- --watch --preserveWatchOutput"
   },
   "dependencies": {
-    "@borkdominik-biguml/big-vscode": "*"
+    "@borkdominik-biguml/big-vscode": "*",
+    "@borkdominik-biguml/uml-model-server": "*",
+    "langium": "^2.1.3",
+    "vscode-uri": "^3.0.2"
   },
   "devDependencies": {
     "@types/vscode": "^1.93.0"

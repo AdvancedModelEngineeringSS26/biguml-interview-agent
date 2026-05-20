@@ -18,6 +18,27 @@ export interface ParsedCommand {
     argument: string;
 }
 
+export type InterviewPhase = 'scope' | 'entities' | 'relationships' | 'details' | 'confirmation' | 'generation';
+
+export interface InterviewRelationship {
+    source: string;
+    target: string;
+    type?: string;
+    multiplicity?: string;
+}
+
+export interface InterviewState {
+    phase: InterviewPhase;
+    filePath?: string;
+    diagramType: 'CLASS';
+    scope?: string;
+    entities: string[];
+    relationships: InterviewRelationship[];
+    details: string[];
+    awaitingConfirmation: boolean;
+    confirmed: boolean;
+}
+
 export type UmlNodeType = 'Class' | 'AbstractClass' | 'Interface' | 'Enumeration' | 'Package' | 'DataType' | 'PrimitiveType';
 
 export type UmlRelationType =
@@ -31,6 +52,37 @@ export interface CreateUmlFileInput {
     diagramType: 'CLASS';
 }
 
+export interface GenerateClassDiagramEntityInput {
+    name: string;
+    elementType: UmlNodeType;
+    properties?: Array<{
+        name: string;
+        typeName?: string;
+        multiplicity?: string;
+        visibility?: UmlVisibility;
+    }>;
+    operations?: Array<{
+        name: string;
+        visibility?: UmlVisibility;
+    }>;
+}
+
+export interface GenerateClassDiagramRelationshipInput {
+    relationType: UmlRelationType;
+    sourceName: string;
+    targetName: string;
+    name?: string;
+    sourceMultiplicity?: string;
+    targetMultiplicity?: string;
+}
+
+export interface GenerateClassDiagramInput {
+    filePath: string;
+    diagramType: 'CLASS';
+    entities: GenerateClassDiagramEntityInput[];
+    relationships?: GenerateClassDiagramRelationshipInput[];
+}
+
 export interface ReadUmlFileInput {
     filePath: string;
 }
@@ -40,6 +92,19 @@ export interface AddNodeInput {
     elementType: UmlNodeType;
     name: string;
     properties?: Record<string, unknown>;
+}
+
+export type UmlClassMemberKind = 'Property' | 'Operation';
+export type UmlVisibility = 'PUBLIC' | 'PRIVATE' | 'PROTECTED' | 'PACKAGE';
+
+export interface AddClassMemberInput {
+    filePath: string;
+    ownerName: string;
+    memberKind: UmlClassMemberKind;
+    name: string;
+    typeName?: string;
+    multiplicity?: string;
+    visibility?: UmlVisibility;
 }
 
 export interface RemoveNodeInput {

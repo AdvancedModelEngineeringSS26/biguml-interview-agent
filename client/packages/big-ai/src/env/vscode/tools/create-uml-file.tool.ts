@@ -12,6 +12,7 @@ import { inject, injectable } from 'inversify';
 import * as vscode from 'vscode';
 import type { CreateUmlFileInput } from '../../common/index.js';
 import { createToolResult, resolveWorkspacePath, validateRequiredString } from './tool-utils.js';
+import { emptyUmlDiagramFile, stringifyUmlDiagramFile } from './uml-file-format.js';
 
 @injectable()
 export class CreateUmlFileTool implements vscode.LanguageModelTool<CreateUmlFileInput> {
@@ -45,23 +46,10 @@ export class CreateUmlFileTool implements vscode.LanguageModelTool<CreateUmlFile
             // File does not exist — proceed
         }
 
-        const content = JSON.stringify(emptyDiagram(), null, '\t');
+        const content = stringifyUmlDiagramFile(emptyUmlDiagramFile());
         await vscode.workspace.fs.writeFile(uri, Buffer.from(content, 'utf-8'));
 
         this.outputChannel.appendLine(`[big-ai] Created UML file: ${uri.fsPath}`);
         return createToolResult(`Created UML file at ${uri.fsPath}`);
     }
-}
-
-function emptyDiagram() {
-    return {
-        diagram: {
-            __type: 'ClassDiagram',
-            __id: 'ClassDiagram1',
-            diagramType: 'CLASS',
-            entities: [],
-            relations: []
-        },
-        metaInfos: []
-    };
 }
