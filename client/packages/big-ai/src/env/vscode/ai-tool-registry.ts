@@ -11,20 +11,36 @@ import type { OnActivate, OnDispose } from '@borkdominik-biguml/big-vscode/vscod
 import { inject, injectable } from 'inversify';
 import * as vscode from 'vscode';
 import { UML_TOOL_NAMES } from '../common/index.js';
-import { DummyTool } from './tools/index.js';
+import { AddNodeTool, AddRelationTool, CreateUmlFileTool, DummyTool, ReadUmlFileTool, RemoveNodeTool, RemoveRelationTool } from './tools/index.js';
 
 @injectable()
 export class AiToolRegistry implements OnActivate, OnDispose {
     protected readonly toDispose: vscode.Disposable[] = [];
 
-    constructor(@inject(DummyTool) protected readonly dummyTool: DummyTool) {}
+    constructor(
+        @inject(DummyTool) protected readonly dummyTool: DummyTool,
+        @inject(CreateUmlFileTool) protected readonly createUmlFileTool: CreateUmlFileTool,
+        @inject(ReadUmlFileTool) protected readonly readUmlFileTool: ReadUmlFileTool,
+        @inject(AddNodeTool) protected readonly addNodeTool: AddNodeTool,
+        @inject(RemoveNodeTool) protected readonly removeNodeTool: RemoveNodeTool,
+        @inject(AddRelationTool) protected readonly addRelationTool: AddRelationTool,
+        @inject(RemoveRelationTool) protected readonly removeRelationTool: RemoveRelationTool
+    ) {}
 
     onActivate(): void {
         if (!vscode.lm?.registerTool) {
             return;
         }
 
-        this.toDispose.push(vscode.lm.registerTool(UML_TOOL_NAMES.dummy, this.dummyTool));
+        this.toDispose.push(
+            vscode.lm.registerTool(UML_TOOL_NAMES.dummy, this.dummyTool),
+            vscode.lm.registerTool(UML_TOOL_NAMES.createUmlFile, this.createUmlFileTool),
+            vscode.lm.registerTool(UML_TOOL_NAMES.readUmlFile, this.readUmlFileTool),
+            vscode.lm.registerTool(UML_TOOL_NAMES.addNode, this.addNodeTool),
+            vscode.lm.registerTool(UML_TOOL_NAMES.removeNode, this.removeNodeTool),
+            vscode.lm.registerTool(UML_TOOL_NAMES.addRelation, this.addRelationTool),
+            vscode.lm.registerTool(UML_TOOL_NAMES.removeRelation, this.removeRelationTool)
+        );
     }
 
     dispose(): void {

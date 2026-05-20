@@ -60,7 +60,8 @@ export class GenericCreateNodeOperationHandler extends OperationHandler implemen
     }
 
     protected createSemantic(operation: CreateNodeOperation): jsonpatch.AddOperation<SerializeAstNode<Node>> {
-        const newName = findAvailableNodeName(this.modelState.semanticRoot, 'New' + this.stripPrefix(operation.elementTypeId));
+        const baseName = (operation.args?.['name'] as string | undefined) ?? ('New' + this.stripPrefix(operation.elementTypeId));
+        const newName = findAvailableNodeName(this.modelState.semanticRoot, baseName);
         const id = createRandomUUID();
         const containerPath = this.resolveContainerPath(operation);
         const astType = this.metadata.convertToAst(operation.elementTypeId) as Node['$type'];

@@ -117,7 +117,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                 const response = await model.sendRequest(
                     messages,
                     {
-                        tools: vscode.lm.tools.filter(tool => tool.name === UML_TOOL_NAMES.dummy)
+                        tools: vscode.lm.tools.filter(tool => (Object.values(UML_TOOL_NAMES) as string[]).includes(tool.name))
                     },
                     token
                 );
