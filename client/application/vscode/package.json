@@ -334,7 +334,7 @@
         "commands": [
             {
                 "name": "interview",
-                "description": "Analyze UML design through Socratic questioning"
+                "description": "Gather requirements and generate a UML class diagram after confirmation"
             },
             {
                 "name": "modify",
@@ -364,6 +364,97 @@
           "required": [
             "message"
           ]
+        }
+      },
+      {
+        "name": "biguml-generate-class-diagram",
+        "displayName": "Generate UML Class Diagram",
+        "modelDescription": "Generates a complete UML class diagram in deterministic order. Use this after /interview confirmation instead of calling create/add-node/add-member/add-relation separately.",
+        "canBeReferencedInPrompt": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "filePath": {
+              "type": "string",
+              "description": "Workspace-relative path for the generated .uml file"
+            },
+            "diagramType": {
+              "type": "string",
+              "enum": ["CLASS"],
+              "description": "The type of UML diagram to generate"
+            },
+            "entities": {
+              "type": "array",
+              "description": "All confirmed class diagram entities. Include properties and operations under their owning entity.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "Entity name"
+                  },
+                  "elementType": {
+                    "type": "string",
+                    "enum": ["Class", "AbstractClass", "Interface", "Enumeration", "Package", "DataType", "PrimitiveType"],
+                    "description": "UML element type"
+                  },
+                  "properties": {
+                    "type": "array",
+                    "description": "Confirmed attributes/properties for this entity",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "name": { "type": "string" },
+                        "typeName": { "type": "string" },
+                        "multiplicity": { "type": "string" },
+                        "visibility": {
+                          "type": "string",
+                          "enum": ["PUBLIC", "PRIVATE", "PROTECTED", "PACKAGE"]
+                        }
+                      },
+                      "required": ["name"]
+                    }
+                  },
+                  "operations": {
+                    "type": "array",
+                    "description": "Confirmed operations/methods for this entity",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "name": { "type": "string" },
+                        "visibility": {
+                          "type": "string",
+                          "enum": ["PUBLIC", "PRIVATE", "PROTECTED", "PACKAGE"]
+                        }
+                      },
+                      "required": ["name"]
+                    }
+                  }
+                },
+                "required": ["name", "elementType"]
+              }
+            },
+            "relationships": {
+              "type": "array",
+              "description": "All confirmed relationships between generated entities. These are added after all entities and members.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "relationType": {
+                    "type": "string",
+                    "enum": ["Association", "Aggregation", "Composition", "Abstraction", "Dependency", "Generalization", "InterfaceRealization", "PackageImport", "PackageMerge", "Realization", "Substitution", "Usage"]
+                  },
+                  "sourceName": { "type": "string" },
+                  "targetName": { "type": "string" },
+                  "name": { "type": "string" },
+                  "sourceMultiplicity": { "type": "string" },
+                  "targetMultiplicity": { "type": "string" }
+                },
+                "required": ["relationType", "sourceName", "targetName"]
+              }
+            }
+          },
+          "required": ["filePath", "diagramType", "entities"]
         }
       },
       {
@@ -430,6 +521,48 @@
             }
           },
           "required": ["filePath", "elementType", "name"]
+        }
+      },
+      {
+        "name": "biguml-add-class-member",
+        "displayName": "Add UML Class Member",
+        "modelDescription": "Adds an attribute/property or simple operation to an existing Class, AbstractClass, Interface, or DataType in a UML class diagram.",
+        "canBeReferencedInPrompt": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "filePath": {
+              "type": "string",
+              "description": "Workspace-relative path of the .uml file"
+            },
+            "ownerName": {
+              "type": "string",
+              "description": "Name of the class-like element that receives the member"
+            },
+            "memberKind": {
+              "type": "string",
+              "enum": ["Property", "Operation"],
+              "description": "Whether to add an attribute/property or an operation"
+            },
+            "name": {
+              "type": "string",
+              "description": "Name of the property or operation"
+            },
+            "typeName": {
+              "type": "string",
+              "description": "Optional type name for a Property. Must match an existing Class, Interface, Enumeration, DataType, or PrimitiveType in the diagram."
+            },
+            "multiplicity": {
+              "type": "string",
+              "description": "Optional multiplicity for a Property, e.g. '1' or '0..*'"
+            },
+            "visibility": {
+              "type": "string",
+              "enum": ["PUBLIC", "PRIVATE", "PROTECTED", "PACKAGE"],
+              "description": "Optional UML visibility"
+            }
+          },
+          "required": ["filePath", "ownerName", "memberKind", "name"]
         }
       },
       {

@@ -13,6 +13,7 @@ import { inject, injectable } from 'inversify';
 import * as vscode from 'vscode';
 import type { AddRelationInput, UmlRelationType } from '../../common/index.js';
 import { createToolResult, resolveWorkspacePath, validateRequiredString, validateUmlDiagramFile } from './tool-utils.js';
+import { stringifyUmlDiagramFile } from './uml-file-format.js';
 
 // Maps UmlRelationType to the GLSP element type ID used in CreateEdgeOperation
 const GLSP_EDGE_TYPE_ID: Record<UmlRelationType, string> = {
@@ -146,8 +147,10 @@ export class AddRelationTool implements vscode.LanguageModelTool<AddRelationInpu
         }
 
         if (MULTIPLICITY_TYPES.has(relationType)) {
-            if (sourceMultiplicity !== undefined) relation['sourceMultiplicity'] = sourceMultiplicity;
-            if (targetMultiplicity !== undefined) relation['targetMultiplicity'] = targetMultiplicity;
+            const safeSourceMultiplicity = sourceMultiplicity === undefined ? undefined : toParserSafeMultiplicity(sourceMultiplicity);
+            const safeTargetMultiplicity = targetMultiplicity === undefined ? undefined : toParserSafeMultiplicity(targetMultiplicity);
+            if (safeSourceMultiplicity !== undefined) relation['sourceMultiplicity'] = safeSourceMultiplicity;
+            if (safeTargetMultiplicity !== undefined) relation['targetMultiplicity'] = safeTargetMultiplicity;
         }
 
         if (relationType === 'Generalization') {
@@ -155,7 +158,7 @@ export class AddRelationTool implements vscode.LanguageModelTool<AddRelationInpu
         }
 
         diagram.diagram.relations.push(relation);
-        await vscode.workspace.fs.writeFile(uri, Buffer.from(JSON.stringify(diagram, null, '\t'), 'utf-8'));
+        await vscode.workspace.fs.writeFile(uri, Buffer.from(stringifyUmlDiagramFile(diagram), 'utf-8'));
 
         this.outputChannel.appendLine(`[big-ai] Added ${relationType} from "${sourceElementName}" to "${targetElementName}" (id: ${id}) via file write`);
         return createToolResult(`Added ${relationType} from "${sourceElementName}" to "${targetElementName}" (id: ${id}) in ${filePath}`);
@@ -165,4 +168,27 @@ export class AddRelationTool implements vscode.LanguageModelTool<AddRelationInpu
 function generateId(): string {
     const uuid = randomUUID();
     return `a${uuid.substring(1)}`;
+}
+
+function toParserSafeMultiplicity(value: string): string | undefined {
+    const trimmed = value.trim();
+    if (trimmed === '*') {
+        return trimmed;
+    }
+    if (/^[a-zA-Z_][\w-]*$/.test(trimmed)) {
+        return trimmed;
+    }
+    switch (trimmed) {
+        case '1':
+            return 'one';
+        case '0..1':
+            return 'zeroToOne';
+        case '0..*':
+        case '*':
+            return '*';
+        case '1..*':
+            return 'oneToMany';
+        default:
+            return undefined;
+    }
 }

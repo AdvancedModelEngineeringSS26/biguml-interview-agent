@@ -13,6 +13,7 @@ import { inject, injectable } from 'inversify';
 import * as vscode from 'vscode';
 import type { AddNodeInput, UmlNodeType } from '../../common/index.js';
 import { createToolResult, resolveWorkspacePath, validateRequiredString, validateUmlDiagramFile } from './tool-utils.js';
+import { stringifyUmlDiagramFile } from './uml-file-format.js';
 
 interface UmlNode {
     __type: string;
@@ -96,6 +97,9 @@ export class AddNodeTool implements vscode.LanguageModelTool<AddNodeInput> {
 
         const existing = diagram.diagram.entities.find(e => e.name === elementName);
         if (existing) {
+            if (existing.__type === elementType || (elementType === 'AbstractClass' && existing.__type === 'Class')) {
+                return createToolResult(`${elementType} "${elementName}" already exists in ${filePath}`);
+            }
             return createToolResult(`Error: An element named "${elementName}" already exists in the diagram.`);
         }
 
@@ -142,7 +146,7 @@ export class AddNodeTool implements vscode.LanguageModelTool<AddNodeInput> {
             );
         }
 
-        await vscode.workspace.fs.writeFile(uri, Buffer.from(JSON.stringify(diagram, null, '\t'), 'utf-8'));
+        await vscode.workspace.fs.writeFile(uri, Buffer.from(stringifyUmlDiagramFile(diagram), 'utf-8'));
 
         this.outputChannel.appendLine(`[big-ai] Added ${elementType} "${elementName}" (id: ${id}) via file write`);
         return createToolResult(`Added ${elementType} "${elementName}" (id: ${id}) to ${filePath}`);
@@ -155,8 +159,9 @@ function generateId(): string {
 }
 
 function buildNode(elementType: UmlNodeType, id: string, name: string, extra?: Record<string, unknown>): UmlNode {
+    const persistedType = elementType === 'AbstractClass' ? 'Class' : elementType;
     const defaults = elementDefaults(elementType);
-    return { __type: elementType, __id: id, name, ...defaults, ...extra };
+    return { __type: persistedType, __id: id, ...defaults, name, ...extra };
 }
 
 function elementDefaults(elementType: UmlNodeType): Record<string, unknown> {

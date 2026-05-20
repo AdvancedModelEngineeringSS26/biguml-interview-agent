@@ -11,15 +11,27 @@ import { bindLifecycle, VscodeFeatureModule } from '@borkdominik-biguml/big-vsco
 import { AiToolRegistry } from './ai-tool-registry.js';
 import { InterviewAgentParticipant } from './interview-agent.participant.js';
 import { ModelServerClient } from './model-server-client.js';
-import { AddNodeTool, AddRelationTool, CreateUmlFileTool, DummyTool, ReadUmlFileTool, RemoveNodeTool, RemoveRelationTool } from './tools/index.js';
+import {
+    AddClassMemberTool,
+    AddNodeTool,
+    AddRelationTool,
+    CreateUmlFileTool,
+    DummyTool,
+    GenerateClassDiagramTool,
+    ReadUmlFileTool,
+    RemoveNodeTool,
+    RemoveRelationTool
+} from './tools/index.js';
 
 export function aiModule() {
     return new VscodeFeatureModule(context => {
         context.bind(ModelServerClient).toSelf().inSingletonScope();
         context.bind(DummyTool).toSelf().inSingletonScope();
+        context.bind(GenerateClassDiagramTool).toSelf().inSingletonScope();
         context.bind(CreateUmlFileTool).toSelf().inSingletonScope();
         context.bind(ReadUmlFileTool).toSelf().inSingletonScope();
         context.bind(AddNodeTool).toSelf().inSingletonScope();
+        context.bind(AddClassMemberTool).toSelf().inSingletonScope();
         context.bind(RemoveNodeTool).toSelf().inSingletonScope();
         context.bind(AddRelationTool).toSelf().inSingletonScope();
         context.bind(RemoveRelationTool).toSelf().inSingletonScope();
