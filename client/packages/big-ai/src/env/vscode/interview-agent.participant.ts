@@ -126,7 +126,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         this.outputChannel.appendLine(`[big-ai] Generation confirmed: ${interviewState.confirmed}`);
         this.outputChannel.appendLine(`[big-ai] Conversation turn: ${context.history.length + 1}`);
 
-        const [model] = await vscode.lm.selectChatModels({ vendor: 'copilot', family: 'gpt-4o' });
+        const [model] = await vscode.lm.selectChatModels({ vendor: 'copilot' });
         if (!model) {
             stream.markdown('**Error**: No compatible chat model (GPT-4o) is available. Please ensure Copilot Chat is installed and authenticated.');
             return {
