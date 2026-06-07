@@ -60,6 +60,12 @@ const NODE_TYPE_ID: Record<UmlNodeType, string> = {
 export class AddNodeTool implements vscode.LanguageModelTool<AddNodeInput> {
     constructor(@inject(OutputChannel) protected readonly outputChannel: OutputChannel) {}
 
+    prepareInvocation(
+        options: vscode.LanguageModelToolInvocationPrepareOptions<AddNodeInput>
+    ): vscode.PreparedToolInvocation {
+        return { invocationMessage: `Adding ${options.input.elementType} "${options.input.name}"` };
+    }
+
     async invoke(
         options: vscode.LanguageModelToolInvocationOptions<AddNodeInput>,
         token: vscode.CancellationToken

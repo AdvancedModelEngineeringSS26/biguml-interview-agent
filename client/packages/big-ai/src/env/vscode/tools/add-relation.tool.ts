@@ -71,6 +71,14 @@ interface UmlDiagramFile {
 export class AddRelationTool implements vscode.LanguageModelTool<AddRelationInput> {
     constructor(@inject(OutputChannel) protected readonly outputChannel: OutputChannel) {}
 
+    prepareInvocation(
+        options: vscode.LanguageModelToolInvocationPrepareOptions<AddRelationInput>
+    ): vscode.PreparedToolInvocation {
+        return {
+            invocationMessage: `Adding ${options.input.relationType} ${options.input.sourceName} → ${options.input.targetName}`
+        };
+    }
+
     async invoke(
         options: vscode.LanguageModelToolInvocationOptions<AddRelationInput>,
         token: vscode.CancellationToken

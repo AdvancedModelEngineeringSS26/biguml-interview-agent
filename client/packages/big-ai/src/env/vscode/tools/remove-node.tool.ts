@@ -43,6 +43,12 @@ interface UmlDiagramFile {
 export class RemoveNodeTool implements vscode.LanguageModelTool<RemoveNodeInput> {
     constructor(@inject(OutputChannel) protected readonly outputChannel: OutputChannel) {}
 
+    prepareInvocation(
+        options: vscode.LanguageModelToolInvocationPrepareOptions<RemoveNodeInput>
+    ): vscode.PreparedToolInvocation {
+        return { invocationMessage: `Removing "${options.input.elementName}"` };
+    }
+
     async invoke(
         options: vscode.LanguageModelToolInvocationOptions<RemoveNodeInput>,
         token: vscode.CancellationToken

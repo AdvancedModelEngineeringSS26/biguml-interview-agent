@@ -175,6 +175,11 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         return uri;
     }
 
+    /** Path of a URI relative to the workspace root — the form the tools expect for their `filePath` argument. */
+    protected toWorkspaceRelative(uri: vscode.Uri): string {
+        return vscode.workspace.asRelativePath(uri, false);
+    }
+
     protected async buildAutoAttachMessages(
         request: vscode.ChatRequest
     ): Promise<vscode.LanguageModelChatMessage[]> {
@@ -213,9 +218,12 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                 `[big-ai] Auto-attached active UML file ${activeUri.fsPath} (${content.length} chars${truncated ? ', truncated' : ''})`
             );
 
+            const relPath = this.toWorkspaceRelative(activeUri);
             return [
                 vscode.LanguageModelChatMessage.User(
-                    `[Auto-attached active UML diagram: ${activeUri.fsPath}]\n${payload}`
+                    `[Auto-attached active UML diagram: ${relPath}]\n` +
+                        `When calling tools that take a filePath, pass exactly this workspace-relative path: "${relPath}".\n` +
+                        payload
                 )
             ];
         } catch (error) {
@@ -232,14 +240,14 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
 
         if (value instanceof vscode.Uri) {
             const bytes = await vscode.workspace.fs.readFile(value);
-            return { content: new TextDecoder().decode(bytes), source: value.fsPath };
+            return { content: new TextDecoder().decode(bytes), source: this.toWorkspaceRelative(value) };
         }
 
         if (value instanceof vscode.Location) {
             const document = await vscode.workspace.openTextDocument(value.uri);
             return {
                 content: document.getText(value.range),
-                source: `${value.uri.fsPath}:${value.range.start.line + 1}-${value.range.end.line + 1}`
+                source: `${this.toWorkspaceRelative(value.uri)}:${value.range.start.line + 1}-${value.range.end.line + 1}`
             };
         }
 
@@ -661,6 +669,8 @@ ${referenceInfo}
 ${activeDiagramInfo}
 
 ## Reference Handling
+All file paths shown in the Context Information above are workspace-relative. When you call any tool that takes a \`filePath\`, pass the workspace-relative path exactly as shown (e.g. \`class_diagram/Model.uml\`) — never an absolute path or one prefixed with the workspace folder name.
+
 When the user attaches references via chat variables such as \`#file:...\` or \`#selection\`, their content is appended to this conversation as messages labeled \`[Attached reference: <name>]\`. Treat that content as authoritative context for the user's current request, and quote element names or excerpts from it when relevant.
 
 If a message labeled \`[Auto-attached active UML diagram: <path>]\` appears, the user has that diagram open in their editor. Use it as context when the user's question is about "this diagram", "the current model", or makes no other file reference. If the question is purely conceptual (e.g. "/explain what is a class diagram"), you may ignore the auto-attached content.`;
@@ -681,9 +691,10 @@ If a message labeled \`[Auto-attached active UML diagram: <path>]\` appears, the
             }
             return false;
         });
+        const relPath = this.toWorkspaceRelative(activeUri);
         return alreadyAttached
-            ? `- Active UML diagram in editor: \`${activeUri.fsPath}\` (also explicitly referenced).`
-            : `- Active UML diagram in editor: \`${activeUri.fsPath}\` (auto-attached below).`;
+            ? `- Active UML diagram in editor: \`${relPath}\` (also explicitly referenced). Use this workspace-relative path for tool calls.`
+            : `- Active UML diagram in editor: \`${relPath}\` (auto-attached below). Use this workspace-relative path for tool calls.`;
     }
 
     protected describeReferences(request: vscode.ChatRequest): string {
@@ -695,11 +706,11 @@ If a message labeled \`[Auto-attached active UML diagram: <path>]\` appears, the
             const label = ref.id;
             const { value } = ref;
             if (value instanceof vscode.Uri) {
-                return `- ${label} → file: \`${value.fsPath}\``;
+                return `- ${label} → file: \`${this.toWorkspaceRelative(value)}\``;
             }
             if (value instanceof vscode.Location) {
                 const r = value.range;
-                return `- ${label} → selection: \`${value.uri.fsPath}\` lines ${r.start.line + 1}-${r.end.line + 1}`;
+                return `- ${label} → selection: \`${this.toWorkspaceRelative(value.uri)}\` lines ${r.start.line + 1}-${r.end.line + 1}`;
             }
             if (typeof value === 'string') {
                 return `- ${label} → inline string (${value.length} chars)`;

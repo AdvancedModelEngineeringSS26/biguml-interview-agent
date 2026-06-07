@@ -39,6 +39,14 @@ interface UmlDiagramFile {
 export class RemoveRelationTool implements vscode.LanguageModelTool<RemoveRelationInput> {
     constructor(@inject(OutputChannel) protected readonly outputChannel: OutputChannel) {}
 
+    prepareInvocation(
+        options: vscode.LanguageModelToolInvocationPrepareOptions<RemoveRelationInput>
+    ): vscode.PreparedToolInvocation {
+        return {
+            invocationMessage: `Removing relation ${options.input.sourceName} → ${options.input.targetName}`
+        };
+    }
+
     async invoke(
         options: vscode.LanguageModelToolInvocationOptions<RemoveRelationInput>,
         token: vscode.CancellationToken

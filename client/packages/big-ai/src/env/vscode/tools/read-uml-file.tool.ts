@@ -17,6 +17,13 @@ import { createToolResult, resolveWorkspacePath } from './tool-utils.js';
 export class ReadUmlFileTool implements vscode.LanguageModelTool<ReadUmlFileInput> {
     constructor(@inject(OutputChannel) protected readonly outputChannel: OutputChannel) {}
 
+    prepareInvocation(
+        options: vscode.LanguageModelToolInvocationPrepareOptions<ReadUmlFileInput>
+    ): vscode.PreparedToolInvocation {
+        const file = options.input.filePath.split(/[\\/]/).pop() ?? 'file';
+        return { invocationMessage: `Reading diagram ${file}` };
+    }
+
     async invoke(
         options: vscode.LanguageModelToolInvocationOptions<ReadUmlFileInput>,
         token: vscode.CancellationToken

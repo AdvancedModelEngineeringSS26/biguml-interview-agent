@@ -17,6 +17,13 @@ import { createToolResult, resolveWorkspacePath, validateRequiredString } from '
 export class CreateUmlFileTool implements vscode.LanguageModelTool<CreateUmlFileInput> {
     constructor(@inject(OutputChannel) protected readonly outputChannel: OutputChannel) {}
 
+    prepareInvocation(
+        options: vscode.LanguageModelToolInvocationPrepareOptions<CreateUmlFileInput>
+    ): vscode.PreparedToolInvocation {
+        const file = options.input.filePath.split(/[\\/]/).pop() ?? 'file';
+        return { invocationMessage: `Creating UML file ${file}` };
+    }
+
     async invoke(
         options: vscode.LanguageModelToolInvocationOptions<CreateUmlFileInput>,
         token: vscode.CancellationToken
