@@ -14,6 +14,16 @@ export function createToolResult(message: string): vscode.LanguageModelToolResul
     return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(message)]);
 }
 
+/**
+ * Returns the `confirmationMessages` portion of a PreparedToolInvocation when the
+ * `bigUML.ai.confirmBeforeApply` setting is enabled, so the user is asked to confirm (Continue/Cancel)
+ * before a mutating tool runs. Returns an empty object when confirmation is disabled.
+ */
+export function confirmationFor(message: string): Pick<vscode.PreparedToolInvocation, 'confirmationMessages'> {
+    const enabled = vscode.workspace.getConfiguration('bigUML.ai').get<boolean>('confirmBeforeApply', true);
+    return enabled ? { confirmationMessages: { title: 'Apply change to UML diagram?', message } } : {};
+}
+
 export function resolveWorkspacePath(filePath: string, options: { requireUmlExtension?: boolean } = {}): vscode.Uri {
     const normalizedPath = validateRequiredString(filePath, 'filePath');
     if (normalizedPath.includes('\0')) {

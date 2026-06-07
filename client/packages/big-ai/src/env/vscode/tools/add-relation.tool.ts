@@ -12,7 +12,7 @@ import { randomUUID } from 'crypto';
 import { inject, injectable } from 'inversify';
 import * as vscode from 'vscode';
 import type { AddRelationInput, UmlRelationType } from '../../common/index.js';
-import { createToolResult, resolveWorkspacePath, validateRequiredString, validateUmlDiagramFile } from './tool-utils.js';
+import { confirmationFor, createToolResult, resolveWorkspacePath, validateRequiredString, validateUmlDiagramFile } from './tool-utils.js';
 
 // Maps UmlRelationType to the GLSP element type ID used in CreateEdgeOperation
 const GLSP_EDGE_TYPE_ID: Record<UmlRelationType, string> = {
@@ -75,7 +75,8 @@ export class AddRelationTool implements vscode.LanguageModelTool<AddRelationInpu
         options: vscode.LanguageModelToolInvocationPrepareOptions<AddRelationInput>
     ): vscode.PreparedToolInvocation {
         return {
-            invocationMessage: `Adding ${options.input.relationType} ${options.input.sourceName} → ${options.input.targetName}`
+            invocationMessage: `Adding ${options.input.relationType} ${options.input.sourceName} → ${options.input.targetName}`,
+            ...confirmationFor(`Add ${options.input.relationType} from ${options.input.sourceName} to ${options.input.targetName}?`)
         };
     }
 

@@ -472,8 +472,22 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                             ])
                         );
                     } catch (toolError) {
-                        this.outputChannel.appendLine(`[big-ai] Tool error: ${toolError instanceof Error ? toolError.message : String(toolError)}`);
-                        throw toolError;
+                        const message = toolError instanceof Error ? toolError.message : String(toolError);
+                        const declined = /cancel/i.test(message);
+                        this.outputChannel.appendLine(`[big-ai] Tool ${declined ? 'declined' : 'error'} (${toolCall.name}): ${message}`);
+                        stream.markdown(
+                            declined
+                                ? '\n\n⚠️ Change declined — stopped applying further changes. Earlier confirmed changes were kept.'
+                                : `\n\n**Could not apply change**: ${message}`
+                        );
+                        return {
+                            metadata: {
+                                command: parsedCommand.type,
+                                toolUsed,
+                                responseStreamed,
+                                declined
+                            }
+                        };
                     }
                 }
             }

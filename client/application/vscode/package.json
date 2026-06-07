@@ -135,6 +135,11 @@
           "type": "string",
           "default": "gpt-4o",
           "description": "Model family for the @biguml chat participant (e.g. 'gpt-4o', 'gpt-4o-mini', 'o1-mini', 'claude-3.5-sonnet'). Falls back to any available model if the requested family is not installed."
+        },
+        "bigUML.ai.confirmBeforeApply": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ask for confirmation before the @biguml chat participant applies each change to a UML diagram (create/add/remove). Disable for faster, unattended editing."
         }
       }
     },

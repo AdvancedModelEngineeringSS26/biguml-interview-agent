@@ -12,7 +12,7 @@ import { randomUUID } from 'crypto';
 import { inject, injectable } from 'inversify';
 import * as vscode from 'vscode';
 import type { AddNodeInput, UmlNodeType } from '../../common/index.js';
-import { createToolResult, resolveWorkspacePath, validateRequiredString, validateUmlDiagramFile } from './tool-utils.js';
+import { confirmationFor, createToolResult, resolveWorkspacePath, validateRequiredString, validateUmlDiagramFile } from './tool-utils.js';
 
 interface UmlNode {
     __type: string;
@@ -63,7 +63,10 @@ export class AddNodeTool implements vscode.LanguageModelTool<AddNodeInput> {
     prepareInvocation(
         options: vscode.LanguageModelToolInvocationPrepareOptions<AddNodeInput>
     ): vscode.PreparedToolInvocation {
-        return { invocationMessage: `Adding ${options.input.elementType} "${options.input.name}"` };
+        return {
+            invocationMessage: `Adding ${options.input.elementType} "${options.input.name}"`,
+            ...confirmationFor(`Add ${options.input.elementType} "${options.input.name}" to the diagram?`)
+        };
     }
 
     async invoke(

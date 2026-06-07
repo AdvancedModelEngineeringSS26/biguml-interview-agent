@@ -11,7 +11,7 @@ import { OutputChannel } from '@borkdominik-biguml/big-vscode/vscode';
 import { inject, injectable } from 'inversify';
 import * as vscode from 'vscode';
 import type { CreateUmlFileInput } from '../../common/index.js';
-import { createToolResult, resolveWorkspacePath, validateRequiredString } from './tool-utils.js';
+import { confirmationFor, createToolResult, resolveWorkspacePath, validateRequiredString } from './tool-utils.js';
 
 @injectable()
 export class CreateUmlFileTool implements vscode.LanguageModelTool<CreateUmlFileInput> {
@@ -21,7 +21,7 @@ export class CreateUmlFileTool implements vscode.LanguageModelTool<CreateUmlFile
         options: vscode.LanguageModelToolInvocationPrepareOptions<CreateUmlFileInput>
     ): vscode.PreparedToolInvocation {
         const file = options.input.filePath.split(/[\\/]/).pop() ?? 'file';
-        return { invocationMessage: `Creating UML file ${file}` };
+        return { invocationMessage: `Creating UML file ${file}`, ...confirmationFor(`Create a new UML file at ${file}?`) };
     }
 
     async invoke(
