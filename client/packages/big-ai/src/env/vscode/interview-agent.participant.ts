@@ -12,6 +12,19 @@ import { injectable } from 'inversify';
 import * as vscode from 'vscode';
 import { AI_PARTICIPANT_ID, UML_TOOL_NAMES, COMMAND_PATTERNS, SYSTEM_PROMPT } from '../common/index.js';
 import type { ParsedCommand } from '../common/tool-types.js';
+import { resolveWorkspacePath } from './tools/tool-utils.js';
+
+/** Tools that create or modify a .uml file; successful runs get an inline anchor to the touched file. */
+const MUTATING_TOOL_NAMES: ReadonlySet<string> = new Set<string>([
+    UML_TOOL_NAMES.createUmlFile,
+    UML_TOOL_NAMES.addNode,
+    UML_TOOL_NAMES.removeNode,
+    UML_TOOL_NAMES.addRelation,
+    UML_TOOL_NAMES.removeRelation
+]);
+
+/** Max LM round-trips per request; each round may stream text and/or invoke tools. Enough for multi-step edits (create + several nodes + relations). */
+const MAX_TOOL_ITERATIONS = 8;
 
 
 @injectable()
@@ -237,6 +250,124 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         return undefined;
     }
 
+    /** Human-readable progress label for a tool invocation, with a counter when several run in one turn. */
+    protected describeToolProgress(
+        toolCall: vscode.LanguageModelToolCallPart,
+        index: number,
+        total: number
+    ): string {
+        const input = (toolCall.input ?? {}) as Record<string, unknown>;
+        const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
+
+        let label: string;
+        switch (toolCall.name) {
+            case UML_TOOL_NAMES.createUmlFile:
+                label = `Creating diagram ${this.fileLabel(str(input.filePath))}`;
+                break;
+            case UML_TOOL_NAMES.readUmlFile:
+                label = `Reading diagram ${this.fileLabel(str(input.filePath))}`;
+                break;
+            case UML_TOOL_NAMES.addNode:
+                label = `Adding ${str(input.elementType) ?? 'element'} "${str(input.name) ?? '?'}"`;
+                break;
+            case UML_TOOL_NAMES.removeNode:
+                label = `Removing "${str(input.elementName) ?? '?'}"`;
+                break;
+            case UML_TOOL_NAMES.addRelation:
+                label = `Adding ${str(input.relationType) ?? 'relation'} ${str(input.sourceName) ?? '?'} → ${str(input.targetName) ?? '?'}`;
+                break;
+            case UML_TOOL_NAMES.removeRelation:
+                label = `Removing relation ${str(input.sourceName) ?? '?'} → ${str(input.targetName) ?? '?'}`;
+                break;
+            default:
+                label = `Running ${toolCall.name}`;
+        }
+
+        return total > 1 ? `(${index}/${total}) ${label}…` : `${label}…`;
+    }
+
+    /** Basename of a workspace path wrapped in backticks for inline display. */
+    protected fileLabel(filePath: string | undefined): string {
+        if (!filePath) {
+            return 'file';
+        }
+        const base = filePath.split(/[\\/]/).pop() || filePath;
+        return `\`${base}\``;
+    }
+
+    /**
+     * After a mutating tool succeeds, emit a short "✓ <change> in <file>" line followed by an inline
+     * anchor to the touched .uml file. VS Code renders a file Uri anchor with its basename (the optional
+     * title is ignored), so the leading markdown carries the semantic label (which element/relation changed).
+     * Skipped when the tool returned an error result or when the same change was already anchored this turn.
+     */
+    protected emitToolAnchor(
+        stream: vscode.ChatResponseStream,
+        toolCall: vscode.LanguageModelToolCallPart,
+        result: vscode.LanguageModelToolResult,
+        anchored: Set<string>
+    ): void {
+        if (!MUTATING_TOOL_NAMES.has(toolCall.name)) {
+            return;
+        }
+        if (this.toolResultText(result).trimStart().toLowerCase().startsWith('error')) {
+            return;
+        }
+
+        const input = (toolCall.input ?? {}) as Record<string, unknown>;
+        const filePath = typeof input.filePath === 'string' ? input.filePath : undefined;
+        if (!filePath) {
+            return;
+        }
+
+        let uri: vscode.Uri;
+        try {
+            uri = resolveWorkspacePath(filePath);
+        } catch {
+            return;
+        }
+
+        const description = this.describeToolChange(toolCall, input);
+        const key = `${uri.toString()}::${description}`;
+        if (anchored.has(key)) {
+            return;
+        }
+        anchored.add(key);
+
+        stream.markdown(`\n\n✓ ${description} in `);
+        stream.anchor(uri);
+    }
+
+    /** Plain-language description of what a mutating tool changed, used as the inline anchor's label. */
+    protected describeToolChange(
+        toolCall: vscode.LanguageModelToolCallPart,
+        input: Record<string, unknown>
+    ): string {
+        const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
+        switch (toolCall.name) {
+            case UML_TOOL_NAMES.createUmlFile:
+                return 'Created diagram';
+            case UML_TOOL_NAMES.addNode:
+                return `Added ${str(input.elementType) ?? 'element'} **${str(input.name) ?? '?'}**`;
+            case UML_TOOL_NAMES.removeNode:
+                return `Removed **${str(input.elementName) ?? '?'}**`;
+            case UML_TOOL_NAMES.addRelation:
+                return `Added ${str(input.relationType) ?? 'relation'} **${str(input.sourceName) ?? '?'} → ${str(input.targetName) ?? '?'}**`;
+            case UML_TOOL_NAMES.removeRelation:
+                return `Removed relation **${str(input.sourceName) ?? '?'} → ${str(input.targetName) ?? '?'}**`;
+            default:
+                return 'Updated diagram';
+        }
+    }
+
+    /** Concatenate the text parts of a tool result. */
+    protected toolResultText(result: vscode.LanguageModelToolResult): string {
+        return result.content
+            .filter((part): part is vscode.LanguageModelTextPart => part instanceof vscode.LanguageModelTextPart)
+            .map(part => part.value)
+            .join('\n');
+    }
+
 
     protected async handleRequest(
         request: vscode.ChatRequest,
@@ -276,10 +407,11 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
 
         let toolUsed = false;
         let responseStreamed = false;
+        const anchoredFiles = new Set<string>();
 
         try {
-            for (let iteration = 0; iteration < 3 && !token.isCancellationRequested; iteration++) {
-                this.outputChannel.appendLine(`[big-ai] LM request iteration ${iteration + 1}/3`);
+            for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS && !token.isCancellationRequested; iteration++) {
+                this.outputChannel.appendLine(`[big-ai] LM request iteration ${iteration + 1}/${MAX_TOOL_ITERATIONS}`);
                 
                 const response = await model.sendRequest(
                     messages,
@@ -312,7 +444,9 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                 this.outputChannel.appendLine(`[big-ai] Tool calls collected: ${toolCalls.length}`);
                 messages.push(vscode.LanguageModelChatMessage.Assistant(toolCalls));
 
-                for (const toolCall of toolCalls) {
+                for (let i = 0; i < toolCalls.length; i++) {
+                    const toolCall = toolCalls[i];
+                    stream.progress(this.describeToolProgress(toolCall, i + 1, toolCalls.length));
                     try {
                         const toolResult = await vscode.lm.invokeTool(
                             toolCall.name,
@@ -323,6 +457,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                             token
                         );
                         this.outputChannel.appendLine(`[big-ai] Tool invoked: ${toolCall.name}`);
+                        this.emitToolAnchor(stream, toolCall, toolResult, anchoredFiles);
                         messages.push(
                             vscode.LanguageModelChatMessage.User([
                                 new vscode.LanguageModelToolResultPart(toolCall.callId, toolResult.content)
