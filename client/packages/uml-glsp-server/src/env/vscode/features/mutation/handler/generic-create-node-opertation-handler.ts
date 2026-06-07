@@ -150,7 +150,10 @@ export class GenericCreateNodeOperationHandler extends OperationHandler implemen
                 }
             }
         }
-        return '';
+        // No (resolvable) container — e.g. operations dispatched programmatically (AI tools) without a
+        // containerId. Default to the diagram root so the node is added to the model instead of producing
+        // an invalid empty patch path ('') that silently drops the entity while leaving orphan metaInfos.
+        return '/diagram/entities/-';
     }
 
     protected stripPrefix(name: string): string {
