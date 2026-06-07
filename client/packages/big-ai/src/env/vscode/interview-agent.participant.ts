@@ -376,6 +376,36 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
             .join('\n');
     }
 
+    /**
+     * Emit standalone command buttons (rendered in the Chat panel only) as calls-to-action.
+     * After a discussion that made no edits we offer a "Generate in diagram" button that re-asks the
+     * agent to build what it just recommended; in interview mode a "Skip & continue" button moves the
+     * conversation on. Both submit a follow-up request via the built-in chat-open command. After the
+     * agent has already applied edits we rely on the inline anchors and follow-up suggestions instead.
+     */
+    protected emitActionButtons(stream: vscode.ChatResponseStream, commandType: string, toolUsed: boolean): void {
+        if (toolUsed) {
+            return;
+        }
+
+        const hasDiagram = this.getActiveUmlUri() !== undefined;
+        if (hasDiagram && commandType !== 'explain') {
+            stream.button({
+                title: 'Generate in diagram',
+                command: 'workbench.action.chat.open',
+                arguments: [{ query: '@biguml /modify Create in the active diagram the elements and relationships you just recommended.' }]
+            });
+        }
+
+        if (commandType === 'interview') {
+            stream.button({
+                title: 'Skip & continue',
+                command: 'workbench.action.chat.open',
+                arguments: [{ query: '@biguml /interview Skip that and move on to the next aspect of the design.' }]
+            });
+        }
+    }
+
 
     protected async handleRequest(
         request: vscode.ChatRequest,
@@ -501,6 +531,8 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         if (responseStreamed) {
             stream.markdown(`\n\n---\n_via ${model.vendor}/${model.family}_`);
         }
+
+        this.emitActionButtons(stream, parsedCommand.type, toolUsed);
 
         this.outputChannel.appendLine(`[big-ai] Response complete (tool_used: ${toolUsed})`);
 
