@@ -60,8 +60,11 @@ export class GenericCreateNodeOperationHandler extends OperationHandler implemen
     }
 
     protected createSemantic(operation: CreateNodeOperation): jsonpatch.AddOperation<SerializeAstNode<Node>> {
-        const baseName = (operation.args?.['name'] as string | undefined) ?? ('New' + this.stripPrefix(operation.elementTypeId));
-        const newName = findAvailableNodeName(this.modelState.semanticRoot, baseName);
+        const explicitName = operation.args?.['name'] as string | undefined;
+        const baseName = explicitName ?? ('New' + this.stripPrefix(operation.elementTypeId));
+        // Keep an explicitly supplied name (e.g. from the AI tools) as-is when free; default names
+        // ('NewClass') keep their always-appended numeric suffix to match palette behaviour.
+        const newName = findAvailableNodeName(this.modelState.semanticRoot, baseName, { allowBare: explicitName !== undefined });
         const id = createRandomUUID();
         const containerPath = this.resolveContainerPath(operation);
         const astType = this.metadata.convertToAst(operation.elementTypeId) as Node['$type'];
