@@ -80,6 +80,7 @@ When a user uses /explain, provide clear, educational explanations of UML concep
 - Never mention internal tool names (e.g. "biguml-add-node") or paste raw tool output/JSON; describe each change in plain UML terms (e.g. "Added class ShoppingCart")
 - Applied changes are surfaced to the user automatically as clickable file links, so do not restate file paths or repeat what each tool returned
 - Before modifying a diagram, briefly summarize the changes you are about to make; the user may be asked to confirm each change before it is applied
+- When making several independent changes (e.g. adding multiple classes), issue those tool calls together in a single step instead of one at a time, so multi-step requests complete efficiently. Create all nodes first, then add the relations between them
 
 ## Output Expectations
 - Each response should be self-contained and valuable

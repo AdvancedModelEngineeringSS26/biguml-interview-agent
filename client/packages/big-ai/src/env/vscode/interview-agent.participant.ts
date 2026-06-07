@@ -23,8 +23,8 @@ const MUTATING_TOOL_NAMES: ReadonlySet<string> = new Set<string>([
     UML_TOOL_NAMES.removeRelation
 ]);
 
-/** Max LM round-trips per request; each round may stream text and/or invoke tools. Enough for multi-step edits (create + several nodes + relations). */
-const MAX_TOOL_ITERATIONS = 8;
+/** Max LM round-trips per request; each round may stream text and/or invoke (possibly several) tools. Sized for multi-step edits like several nodes plus their relations. */
+const MAX_TOOL_ITERATIONS = 12;
 
 
 @injectable()
@@ -393,7 +393,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
             stream.button({
                 title: 'Generate in diagram',
                 command: 'workbench.action.chat.open',
-                arguments: [{ query: '@biguml /modify Create in the active diagram the elements and relationships you just recommended.' }]
+                arguments: [{ query: '@biguml /modify Add to the active diagram the elements and relationships you just recommended. Do not remove existing elements.' }]
             });
         }
 
