@@ -346,6 +346,19 @@
         "name": "biguml",
         "description": "Interactively creates and modifies UML diagrams through structured interviews",
         "isSticky": true,
+        "disambiguation": [
+            {
+                "category": "uml_generation",
+                "description": "The user wants to create, analyze or modify a UML diagram from a natural language description.",
+                "examples": [
+                    "Create a class diagram for a library system",
+                    "I need a UML diagram for my e-commerce application",
+                    "Generate a class diagram with Customer, Order and Product",
+                    "How can I improve my diagram?",
+                    "What is this class doing?"
+                ]
+            }
+        ],
         "commands": [
             {
                 "name": "interview",

@@ -291,7 +291,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                 label = `Running ${toolCall.name}`;
         }
 
-        return total > 1 ? `(${index}/${total}) ${label}…` : `${label}…`;
+        return total > 1 ? `Step ${index} of ${total}: ${label}…` : `${label}…`;
     }
 
     /** Basename of a workspace path wrapped in backticks for inline display. */
@@ -313,9 +313,10 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         stream: vscode.ChatResponseStream,
         toolCall: vscode.LanguageModelToolCallPart,
         result: vscode.LanguageModelToolResult,
-        anchored: Set<string>
+        anchored: Set<string>,
+        isInlineChat: boolean
     ): void {
-        if (!MUTATING_TOOL_NAMES.has(toolCall.name)) {
+        if (isInlineChat || !MUTATING_TOOL_NAMES.has(toolCall.name)) {
             return;
         }
         if (this.toolResultText(result).trimStart().toLowerCase().startsWith('error')) {
@@ -383,8 +384,8 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
      * conversation on. Both submit a follow-up request via the built-in chat-open command. After the
      * agent has already applied edits we rely on the inline anchors and follow-up suggestions instead.
      */
-    protected emitActionButtons(stream: vscode.ChatResponseStream, commandType: string, toolUsed: boolean): void {
-        if (toolUsed) {
+    protected emitActionButtons(stream: vscode.ChatResponseStream, commandType: string, toolUsed: boolean, isInlineChat: boolean): void {
+        if (isInlineChat || toolUsed) {
             return;
         }
 
@@ -413,10 +414,12 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         stream: vscode.ChatResponseStream,
         token: vscode.CancellationToken
     ): Promise<vscode.ChatResult> {
+        const isInlineChat = request.location === vscode.ChatLocation.Editor;
         const parsedCommand = this.parseCommand(request.prompt);
         this.outputChannel.appendLine(`[big-ai] Request: ${request.prompt}`);
         this.outputChannel.appendLine(`[big-ai] Command type: ${parsedCommand.type}`);
         this.outputChannel.appendLine(`[big-ai] Conversation turn: ${context.history.length + 1}`);
+        this.outputChannel.appendLine(`[big-ai] Location: ${isInlineChat ? 'Editor (Inline)' : 'Panel'}`);
 
         const model = await this.selectModel();
         if (!model) {
@@ -436,7 +439,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         const autoAttachMessages = await this.buildAutoAttachMessages(request);
 
         const messages: vscode.LanguageModelChatMessage[] = [
-            vscode.LanguageModelChatMessage.User(this.buildSystemMessage(request, parsedCommand)),
+            vscode.LanguageModelChatMessage.User(this.buildSystemMessage(request, parsedCommand, isInlineChat)),
             ...historyMessages,
             ...referenceMessages,
             ...autoAttachMessages,
@@ -478,6 +481,15 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                     break;
                 }
 
+                if (toolCalls.length > 1 && !isInlineChat) {
+                    stream.markdown(`\n\n### Proposed Changes (${toolCalls.length} steps)\n`);
+                    for (let i = 0; i < toolCalls.length; i++) {
+                        const description = this.describeToolChange(toolCalls[i], (toolCalls[i].input ?? {}) as Record<string, unknown>);
+                        stream.markdown(`${i + 1}. ${description}\n`);
+                    }
+                    stream.markdown('\n---\n');
+                }
+
                 toolUsed = true;
                 this.outputChannel.appendLine(`[big-ai] Tool calls collected: ${toolCalls.length}`);
                 messages.push(vscode.LanguageModelChatMessage.Assistant(toolCalls));
@@ -495,7 +507,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                             token
                         );
                         this.outputChannel.appendLine(`[big-ai] Tool invoked: ${toolCall.name}`);
-                        this.emitToolAnchor(stream, toolCall, toolResult, anchoredFiles);
+                        this.emitToolAnchor(stream, toolCall, toolResult, anchoredFiles, isInlineChat);
                         messages.push(
                             vscode.LanguageModelChatMessage.User([
                                 new vscode.LanguageModelToolResultPart(toolCall.callId, toolResult.content)
@@ -532,7 +544,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
             stream.markdown(`\n\n---\n_via ${model.vendor}/${model.family}_`);
         }
 
-        this.emitActionButtons(stream, parsedCommand.type, toolUsed);
+        this.emitActionButtons(stream, parsedCommand.type, toolUsed, isInlineChat);
 
         this.outputChannel.appendLine(`[big-ai] Response complete (tool_used: ${toolUsed})`);
 
@@ -646,8 +658,8 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         return followupsByCommand[commandType] || followupsByCommand['default'];
     }
 
-    protected buildSystemMessage(request: vscode.ChatRequest, command: ParsedCommand): string {
-        const commandContexts = {
+    protected buildSystemMessage(request: vscode.ChatRequest, command: ParsedCommand, isInlineChat: boolean): string {
+        const commandContexts: Record<string, string> = {
             interview: `## Interview Mode Activation
                         You are in INTERVIEW mode. Your goals:
                         1. Ask probing questions that guide the user to deeper understanding
@@ -702,11 +714,24 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         const referenceInfo = this.describeReferences(request);
         const activeDiagramInfo = this.describeActiveDiagram(request);
 
+        const inlineContext = isInlineChat
+            ? `## Inline Chat Activation (IMPORTANT)
+               You are being summoned via INLINE CHAT inside a specific file editor.
+               1. Keep your responses extremely concise and to the point.
+               2. Prefer showing code blocks (UML diagram text) over lengthy explanations.
+               3. Do not suggest complex multi-turn workflows.
+               4. Focus on the immediate task or question about the current selection.`
+            : '';
+
         return `${SYSTEM_PROMPT}
 
 ---
 
 ${modeContext}
+
+---
+
+${inlineContext}
 
 ---
 
