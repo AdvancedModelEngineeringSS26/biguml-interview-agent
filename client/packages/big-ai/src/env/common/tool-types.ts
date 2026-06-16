@@ -20,6 +20,8 @@ export interface ParsedCommand {
 
 export type InterviewPhase = 'scope' | 'entities' | 'relationships' | 'details' | 'confirmation' | 'generation';
 
+export type DiagramType = 'CLASS' | 'DEPLOYMENT';
+
 export interface InterviewRelationship {
     source: string;
     target: string;
@@ -30,7 +32,7 @@ export interface InterviewRelationship {
 export interface InterviewState {
     phase: InterviewPhase;
     filePath?: string;
-    diagramType: 'CLASS';
+    diagramType: DiagramType;
     scope?: string;
     entities: string[];
     relationships: InterviewRelationship[];
@@ -41,15 +43,19 @@ export interface InterviewState {
 
 export type UmlNodeType = 'Class' | 'AbstractClass' | 'Interface' | 'Enumeration' | 'Package' | 'DataType' | 'PrimitiveType';
 
+export type DeploymentNodeType = 'Artifact' | 'Device' | 'ExecutionEnvironment' | 'DeploymentNode' | 'DeploymentSpecification' | 'DeploymentPackage' | 'DeploymentModel';
+
 export type UmlRelationType =
     | 'Association' | 'Aggregation' | 'Composition'
     | 'Abstraction' | 'Dependency' | 'Generalization'
     | 'InterfaceRealization' | 'PackageImport' | 'PackageMerge'
     | 'Realization' | 'Substitution' | 'Usage';
 
+export type DeploymentRelationType = 'CommunicationPath' | 'Deployment' | 'Dependency' | 'Generalization' | 'Manifestation';
+
 export interface CreateUmlFileInput {
     filePath: string;
-    diagramType: 'CLASS';
+    diagramType: DiagramType;
 }
 
 export interface GenerateClassDiagramEntityInput {
@@ -81,6 +87,24 @@ export interface GenerateClassDiagramInput {
     diagramType: 'CLASS';
     entities: GenerateClassDiagramEntityInput[];
     relationships?: GenerateClassDiagramRelationshipInput[];
+}
+
+export interface GenerateDeploymentDiagramEntityInput {
+    name: string;
+    elementType: DeploymentNodeType;
+}
+
+export interface GenerateDeploymentDiagramRelationshipInput {
+    relationType: DeploymentRelationType;
+    sourceName: string;
+    targetName: string;
+}
+
+export interface GenerateDeploymentDiagramInput {
+    filePath: string;
+    diagramType: 'DEPLOYMENT';
+    entities: GenerateDeploymentDiagramEntityInput[];
+    relationships?: GenerateDeploymentDiagramRelationshipInput[];
 }
 
 export interface ReadUmlFileInput {
