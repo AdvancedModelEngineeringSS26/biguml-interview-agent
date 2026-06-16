@@ -166,11 +166,9 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                 );
 
                 const toolCalls: vscode.LanguageModelToolCallPart[] = [];
-                const textParts: string[] = [];
 
                 for await (const part of response.stream) {
                     if (part instanceof vscode.LanguageModelTextPart) {
-                        textParts.push(part.value);
                         if (!requireToolCalls) {
                             stream.markdown(part.value);
                             responseStreamed = true;
