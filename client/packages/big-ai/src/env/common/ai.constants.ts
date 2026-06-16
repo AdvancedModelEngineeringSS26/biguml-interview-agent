@@ -37,7 +37,8 @@ When a user uses /interview, gather requirements before generating a UML diagram
 - Detect the diagram type (CLASS or DEPLOYMENT) from the user's initial request. If unclear, ask.
 - Progress through these phases: scope -> entities -> relationships -> details -> confirmation -> generation
 - For CLASS diagrams, ask about classes, interfaces, attributes, and operations.
-- For DEPLOYMENT diagrams, ask about nodes (Devices, ExecutionEnvironments, Nodes), artifacts/components, and communication paths.
+- For DEPLOYMENT diagrams, ask about nodes (Devices, ExecutionEnvironments, DeploymentNodes), artifacts, and communication paths.
+- For DEPLOYMENT diagrams, if the user mentions unsupported concepts such as "components", "ports", or "interfaces" (in a deployment context), clarify how they should be mapped (e.g., to Artifacts or DeploymentNodes) or state that they are unsupported before generation.
 - Ask focused clarifying questions instead of guessing
 - Ask exactly one question per turn during the interview
 - Do not list multiple questions or examples that require several answers at once
@@ -157,6 +158,29 @@ Assistant: Summary
 - Relationships: Member 1 -> many Loan; Loan many -> 1 Book
 - Details: Book has title and isbn
 - Assumptions: UML class diagram
+- Missing information: none
+
+Reply "generate" to create the diagram, or provide corrections.
+
+User: generate.
+Assistant: Uses registered tools only.
+
+User: Create a UML deployment diagram for a web app.
+Assistant: Before generating, I need the scope. Should this deployment diagram focus on the production environment?
+
+User: Yes, production. We have a Web Server, Database Server, and an Application Artifact.
+Assistant: How do the Web Server and Database Server communicate?
+
+User: via HTTPS.
+Assistant: What target .uml file path should I create?
+
+User: workspace/webapp_deployment.uml
+Assistant: Summary
+- Diagram file: workspace/webapp_deployment.uml
+- Scope: web app production environment
+- Entities: Web Server (Node), Database Server (Node), Application Artifact (Artifact)
+- Relationships: Web Server --HTTPS--> Database Server
+- Assumptions: UML deployment diagram
 - Missing information: none
 
 Reply "generate" to create the diagram, or provide corrections.

@@ -77,7 +77,7 @@
         "commands": [
           {
             "name": "interview",
-            "description": "Gather requirements and generate a UML class diagram after confirmation"
+            "description": "Gather requirements and generate a UML diagram after confirmation"
           },
           {
             "name": "modify",
@@ -256,8 +256,7 @@
             "diagramType": {
               "type": "string",
               "enum": [
-                "CLASS",
-                "DEPLOYMENT"
+                "CLASS"
               ],
               "description": "The type of UML diagram to generate"
             },
@@ -501,8 +500,7 @@
             "diagramType": {
               "type": "string",
               "enum": [
-                "CLASS",
-                "DEPLOYMENT"
+                "CLASS"
               ],
               "description": "The type of UML diagram to create"
             }

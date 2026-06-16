@@ -95,6 +95,20 @@ Expected behavior:
 - No generation happens yet.
 - The agent asks clarifying questions or produces a summary that requires confirmation.
 
+### Deployment Diagram
+
+Try:
+
+```text
+@biguml /interview Create a deployment diagram for a cloud system.
+```
+
+Expected behavior:
+
+- The agent asks clarifying questions about nodes (Devices, Execution Environments) and communication paths.
+- The summary should correctly identify the diagram type as `DEPLOYMENT`.
+- After confirmation, it should call `biguml-generate-deployment-diagram`.
+
 ### Unsupported Diagram Type
 
 Try:

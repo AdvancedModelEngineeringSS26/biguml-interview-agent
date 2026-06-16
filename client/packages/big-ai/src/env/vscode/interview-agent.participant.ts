@@ -102,7 +102,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
             return command.argument.trim();
         }
         const defaults: Record<string, string> = {
-            interview: 'Please start a requirements interview for a UML class diagram.',
+            interview: 'Please start a requirements interview for a UML diagram.',
             modify: 'Please suggest improvements to the current design.',
             explain: 'Please explain the current UML structure.',
             default: request.prompt
@@ -509,6 +509,10 @@ Use only confirmed information from the transcript. Include relationships after 
         prompt: string,
         command: ParsedCommand
     ): 'CLASS' | 'DEPLOYMENT' {
+        if (this.isDeploymentIntent(prompt) || (command.type === 'interview' && this.isDeploymentIntent(command.argument))) {
+            return 'DEPLOYMENT';
+        }
+
         const history = [...context.history].reverse();
         for (const turn of history) {
             let text = '';
@@ -518,7 +522,7 @@ Use only confirmed information from the transcript. Include relationships after 
                 text = this.responseTurnText(turn);
             }
 
-            if (/\bdeployment\b/i.test(text)) {
+            if (this.isDeploymentIntent(text)) {
                 return 'DEPLOYMENT';
             }
             if (/\bclass\b/i.test(text)) {
@@ -526,11 +530,11 @@ Use only confirmed information from the transcript. Include relationships after 
             }
         }
 
-        if (/\bdeployment\b/i.test(prompt) || /\bdeployment\b/i.test(command.argument)) {
-            return 'DEPLOYMENT';
-        }
-
         return 'CLASS';
+    }
+
+    protected isDeploymentIntent(text: string): boolean {
+        return /\b(deployment|device|node|artifact|execution\s*environment|communication\s*path)\b/i.test(text);
     }
 
     protected deriveInterviewPhase(
@@ -642,7 +646,7 @@ ${this.buildInterviewTranscript(context)}`;
         const commandContexts = {
             interview: `## Interview Mode Activation
                         You are in INTERVIEW mode. Your goals:
-                        1. Gather class diagram requirements in this order: scope, entities, relationships, details, confirmation.
+                        1. Gather ${interviewState.diagramType.toLowerCase()} diagram requirements in this order: scope, entities, relationships, details, confirmation.
                         2. Ask exactly one clarifying question per assistant response when information is missing.
                         3. Avoid compound prompts such as multiple bullet questions, "for example" question lists, or several alternatives that all need answers.
                         4. Show the required summary before generation.
