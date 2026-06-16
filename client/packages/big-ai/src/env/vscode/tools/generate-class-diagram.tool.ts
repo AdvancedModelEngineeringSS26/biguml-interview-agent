@@ -160,7 +160,7 @@ function validateInput(input: GenerateClassDiagramInput): GenerateClassDiagramIn
     }
     const names = new Set<string>();
     for (const entity of input.entities) {
-        validateRequiredString(entity.name, 'entity.name');
+        entity.name = validateRequiredString(entity.name, 'entity.name');
         if (names.has(entity.name)) {
             throw new Error(`Duplicate entity "${entity.name}".`);
         }
@@ -174,8 +174,8 @@ function validateInput(input: GenerateClassDiagramInput): GenerateClassDiagramIn
         if (!RELATION_TYPES.has(relationship.relationType)) {
             throw new Error(`Unsupported relationType "${String(relationship.relationType)}".`);
         }
-        validateRequiredString(relationship.sourceName, 'relationship.sourceName');
-        validateRequiredString(relationship.targetName, 'relationship.targetName');
+        relationship.sourceName = validateRequiredString(relationship.sourceName, 'relationship.sourceName');
+        relationship.targetName = validateRequiredString(relationship.targetName, 'relationship.targetName');
     }
     return input;
 }
@@ -252,7 +252,7 @@ function addProperty(
     const member: UmlClassMember = {
         __type: 'Property',
         __id: generateId(),
-        name: toParserSafeMemberName(property.name),
+        name: toParserSafeMemberName(validateRequiredString(property.name, 'property.name')),
         isDerived: false,
         isOrdered: false,
         isStatic: false,
@@ -266,9 +266,10 @@ function addProperty(
         member.multiplicity = multiplicity;
     }
     if (property.typeName !== undefined) {
-        const typeNode = findOrCreateTypeNode(diagram, nodesByName, property.typeName);
+        const typeName = validateRequiredString(property.typeName, 'property.typeName');
+        const typeNode = findOrCreateTypeNode(diagram, nodesByName, typeName);
         if (!typeNode) {
-            throw new Error(`No type named "${property.typeName}" found for property "${property.name}".`);
+            throw new Error(`No type named "${typeName}" found for property "${property.name}".`);
         }
         member.propertyType = { __type: 'Reference', __refType: 'DataTypeReference', __value: typeNode.__id };
     }
@@ -284,7 +285,7 @@ function addOperation(
     owner.operations.push({
         __type: 'Operation',
         __id: generateId(),
-        name: toParserSafeMemberName(name),
+        name: toParserSafeMemberName(validateRequiredString(name, 'operation.name')),
         visibility: visibility ?? 'PUBLIC',
         parameters: []
     });
