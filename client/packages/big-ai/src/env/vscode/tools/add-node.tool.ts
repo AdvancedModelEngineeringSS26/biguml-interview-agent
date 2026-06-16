@@ -97,7 +97,10 @@ export class AddNodeTool implements vscode.LanguageModelTool<AddNodeInput> {
 
         const existing = diagram.diagram.entities.find(e => e.name === elementName);
         if (existing) {
-            if (existing.__type === elementType || (elementType === 'AbstractClass' && existing.__type === 'Class')) {
+            if (existing.__type === elementType) {
+                return createToolResult(`${elementType} "${elementName}" already exists in ${filePath}`);
+            }
+            if (elementType === 'AbstractClass' && existing.__type === 'Class' && existing['isAbstract'] === true) {
                 return createToolResult(`${elementType} "${elementName}" already exists in ${filePath}`);
             }
             return createToolResult(`Error: An element named "${elementName}" already exists in the diagram.`);
