@@ -256,7 +256,8 @@
             "diagramType": {
               "type": "string",
               "enum": [
-                "CLASS"
+                "CLASS",
+                "DEPLOYMENT"
               ],
               "description": "The type of UML diagram to generate"
             },
@@ -399,6 +400,93 @@
         }
       },
       {
+        "name": "biguml-generate-deployment-diagram",
+        "displayName": "Generate UML Deployment Diagram",
+        "modelDescription": "Generates a complete UML deployment diagram in deterministic order. Use this after /interview confirmation instead of calling create/add-node/add-relation separately.",
+        "canBeReferencedInPrompt": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "filePath": {
+              "type": "string",
+              "description": "Workspace-relative path for the generated .uml file"
+            },
+            "diagramType": {
+              "type": "string",
+              "enum": [
+                "DEPLOYMENT"
+              ],
+              "description": "The type of UML diagram to generate"
+            },
+            "entities": {
+              "type": "array",
+              "description": "All confirmed deployment diagram entities.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "Entity name"
+                  },
+                  "elementType": {
+                    "type": "string",
+                    "enum": [
+                      "Artifact",
+                      "Device",
+                      "ExecutionEnvironment",
+                      "DeploymentNode",
+                      "DeploymentSpecification",
+                      "DeploymentPackage",
+                      "DeploymentModel"
+                    ],
+                    "description": "UML element type"
+                  }
+                },
+                "required": [
+                  "name",
+                  "elementType"
+                ]
+              }
+            },
+            "relationships": {
+              "type": "array",
+              "description": "All confirmed relationships between generated entities.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "relationType": {
+                    "type": "string",
+                    "enum": [
+                      "CommunicationPath",
+                      "Deployment",
+                      "Dependency",
+                      "Generalization",
+                      "Manifestation"
+                    ]
+                  },
+                  "sourceName": {
+                    "type": "string"
+                  },
+                  "targetName": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "relationType",
+                  "sourceName",
+                  "targetName"
+                ]
+              }
+            }
+          },
+          "required": [
+            "filePath",
+            "diagramType",
+            "entities"
+          ]
+        }
+      },
+      {
         "name": "biguml-create-uml-file",
         "displayName": "Create UML File",
         "modelDescription": "Creates a new empty UML file at the specified path with a given diagram type. Use this when the user wants to start a new diagram.",
@@ -413,7 +501,8 @@
             "diagramType": {
               "type": "string",
               "enum": [
-                "CLASS"
+                "CLASS",
+                "DEPLOYMENT"
               ],
               "description": "The type of UML diagram to create"
             }
