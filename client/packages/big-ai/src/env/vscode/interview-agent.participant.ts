@@ -11,12 +11,13 @@ import type { OnActivate, OnDispose } from '@borkdominik-biguml/big-vscode/vscod
 import { injectable } from 'inversify';
 import * as vscode from 'vscode';
 import { AI_PARTICIPANT_ID, UML_TOOL_NAMES, COMMAND_PATTERNS, SYSTEM_PROMPT } from '../common/index.js';
-import type { GenerateClassDiagramInput, InterviewPhase, InterviewState, ParsedCommand } from '../common/tool-types.js';
+import type { InterviewPhase, InterviewState, ParsedCommand } from '../common/tool-types.js';
 
 const MAX_HISTORY_TURNS = 10;
 const READ_ONLY_TOOL_NAMES = [UML_TOOL_NAMES.readUmlFile] as const;
 const GENERATION_TOOL_NAMES = [
-    UML_TOOL_NAMES.generateClassDiagram
+    UML_TOOL_NAMES.generateClassDiagram,
+    UML_TOOL_NAMES.generateDeploymentDiagram
 ] as const;
 
 @injectable()
@@ -188,9 +189,13 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                     if (requireToolCalls && !generationRetryRequested) {
                         generationRetryRequested = true;
                         this.outputChannel.appendLine('[big-ai] Confirmed generation produced no tool call; deriving aggregate input as JSON');
-                        const generatedInput = await this.requestGenerationInput(model, messages, token);
+                        const generatedInput = await this.requestGenerationInput(model, messages, token, interviewState.diagramType);
+                        const toolName =
+                            interviewState.diagramType === 'DEPLOYMENT'
+                                ? UML_TOOL_NAMES.generateDeploymentDiagram
+                                : UML_TOOL_NAMES.generateClassDiagram;
                         const toolResult = await vscode.lm.invokeTool(
-                            UML_TOOL_NAMES.generateClassDiagram,
+                            toolName,
                             {
                                 input: generatedInput as unknown as object,
                                 toolInvocationToken: request.toolInvocationToken
@@ -267,13 +272,31 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
     protected async requestGenerationInput(
         model: vscode.LanguageModelChat,
         messages: vscode.LanguageModelChatMessage[],
-        token: vscode.CancellationToken
-    ): Promise<GenerateClassDiagramInput> {
-        const extractionMessages = [
-            ...messages,
-            vscode.LanguageModelChatMessage.User(`Return only the JSON input for biguml-generate-class-diagram. Do not call tools and do not include markdown.
-The JSON shape is:
-{
+        token: vscode.CancellationToken,
+        diagramType: 'CLASS' | 'DEPLOYMENT'
+    ): Promise<unknown> {
+        const toolName =
+            diagramType === 'DEPLOYMENT' ? 'biguml-generate-deployment-diagram' : 'biguml-generate-class-diagram';
+        const schema =
+            diagramType === 'DEPLOYMENT'
+                ? `{
+  "filePath": "workspace-relative-target.uml",
+  "diagramType": "DEPLOYMENT",
+  "entities": [
+    {
+      "name": "NodeName",
+      "elementType": "Artifact | Device | ExecutionEnvironment | DeploymentNode | DeploymentSpecification | DeploymentPackage | DeploymentModel"
+    }
+  ],
+  "relationships": [
+    {
+      "relationType": "CommunicationPath | Deployment | Dependency | Generalization | Manifestation",
+      "sourceName": "Source",
+      "targetName": "Target"
+    }
+  ]
+}`
+                : `{
   "filePath": "workspace-relative-target.uml",
   "diagramType": "CLASS",
   "entities": [
@@ -294,8 +317,18 @@ The JSON shape is:
       "targetMultiplicity": "optional"
     }
   ]
-}
-Use only confirmed information from the transcript. Include relationships after all entities. If operations have return types in the transcript, keep only the operation names because the current tool schema has no operation return type field.`)
+}`;
+
+        const extractionMessages = [
+            ...messages,
+            vscode.LanguageModelChatMessage.User(`Return only the JSON input for ${toolName}. Do not call tools and do not include markdown.
+The JSON shape is:
+${schema}
+Use only confirmed information from the transcript. Include relationships after all entities. ${
+                diagramType === 'CLASS'
+                    ? 'If operations have return types in the transcript, keep only the operation names because the current tool schema has no operation return type field.'
+                    : ''
+            }`)
         ];
 
         const response = await model.sendRequest(extractionMessages, {}, token);
@@ -307,7 +340,7 @@ Use only confirmed information from the transcript. Include relationships after 
         }
 
         const parsed = this.parseJsonObject(text);
-        return parsed as GenerateClassDiagramInput;
+        return parsed;
     }
 
     protected parseJsonObject(text: string): unknown {
@@ -458,16 +491,46 @@ Use only confirmed information from the transcript. Include relationships after 
         const confirmed = this.isConfirmationTurn(context, prompt);
         const awaitingConfirmation = this.previousAssistantRequestedGeneration(context);
         const phase = this.deriveInterviewPhase(context, command, awaitingConfirmation, confirmed);
+        const diagramType = this.deriveDiagramType(context, prompt, command);
 
         return {
             phase,
-            diagramType: 'CLASS',
+            diagramType,
             entities: [],
             relationships: [],
             details: [],
             awaitingConfirmation,
             confirmed
         };
+    }
+
+    protected deriveDiagramType(
+        context: vscode.ChatContext,
+        prompt: string,
+        command: ParsedCommand
+    ): 'CLASS' | 'DEPLOYMENT' {
+        const history = [...context.history].reverse();
+        for (const turn of history) {
+            let text = '';
+            if (turn instanceof vscode.ChatRequestTurn) {
+                text = turn.prompt;
+            } else if (turn instanceof vscode.ChatResponseTurn) {
+                text = this.responseTurnText(turn);
+            }
+
+            if (/\bdeployment\b/i.test(text)) {
+                return 'DEPLOYMENT';
+            }
+            if (/\bclass\b/i.test(text)) {
+                return 'CLASS';
+            }
+        }
+
+        if (/\bdeployment\b/i.test(prompt) || /\bdeployment\b/i.test(command.argument)) {
+            return 'DEPLOYMENT';
+        }
+
+        return 'CLASS';
     }
 
     protected deriveInterviewPhase(
@@ -542,17 +605,19 @@ Use only confirmed information from the transcript. Include relationships after 
     }
 
     protected buildInterviewStateInstruction(context: vscode.ChatContext, interviewState: InterviewState): string {
-        const availableTools = interviewState.confirmed
-            ? 'generateClassDiagram only'
-            : 'readUmlFile only';
+        const generationTool =
+            interviewState.diagramType === 'DEPLOYMENT'
+                ? 'biguml-generate-deployment-diagram'
+                : 'biguml-generate-class-diagram';
+        const availableTools = interviewState.confirmed ? `${generationTool} only` : 'readUmlFile only';
 
         const generationRule = interviewState.confirmed
-            ? 'The user confirmed a complete prior summary with no missing information. Call biguml-generate-class-diagram exactly once with the complete confirmed diagram. This tool creates or replaces the target .uml file, then creates nodes, members, and relationships in deterministic order. Do not read the file first. Do not output raw UML.'
+            ? `The user confirmed a complete prior summary with no missing information. Call ${generationTool} exactly once with the complete confirmed diagram. This tool creates or replaces the target .uml file, then creates nodes, members, and relationships in deterministic order. Do not read the file first. Do not output raw UML.`
             : 'The user has not confirmed a complete summary. Do not call createUmlFile, addNode, addClassMember, addRelation, removeNode, or removeRelation. Continue the interview by asking exactly one clear, friendly question, or show the required summary only when no information is missing. You may offer concrete suggestions when useful, but label them as suggestions that the user can accept or change.';
 
         return `## Interview State
 - Phase: ${interviewState.phase}
-- Diagram type: CLASS
+- Diagram type: ${interviewState.diagramType}
 - Awaiting confirmation: ${interviewState.awaitingConfirmation}
 - Confirmed for generation: ${interviewState.confirmed}
 - Tools available this turn: ${availableTools}
