@@ -12,17 +12,48 @@ import { injectable } from 'inversify';
 import * as vscode from 'vscode';
 import { AI_PARTICIPANT_ID, UML_TOOL_NAMES, COMMAND_PATTERNS, SYSTEM_PROMPT } from '../common/index.js';
 import type { GenerateClassDiagramInput, InterviewPhase, InterviewState, ParsedCommand } from '../common/tool-types.js';
+import { InterviewSessionManager } from './interview-session-manager.js';
 
 const MAX_HISTORY_TURNS = 10;
-const READ_ONLY_TOOL_NAMES = [UML_TOOL_NAMES.readUmlFile] as const;
-const GENERATION_TOOL_NAMES = [
-    UML_TOOL_NAMES.generateClassDiagram
-] as const;
+const NO_TOOL_NAMES: readonly string[] = [];
+const GENERATION_TOOL_NAMES = [UML_TOOL_NAMES.generateClassDiagram] as const;
+const STATUS_INTENT_PATTERNS: readonly RegExp[] = [
+    /\bgive\s+me\s+(a\s+)?summary\b/i,
+    /\bshow\s+me\s+(the\s+)?(plan|table|steps)\b/i,
+    /\bwhat\s+have\s+we\s+(done|covered)\b/i,
+    /\bwhere\s+(are\s+we|do\s+we\s+stand)\b/i,
+    /\bsummary\s+of\s+steps\b/i,
+    /\bprogress\s+(so\s+far|update)\b/i,
+    /\b(current\s+)?status\s+(of|on)\s+(the\s+)?(interview|session|diagram)\b/i,
+    /\bshow\s+(current\s+)?progress\b/i,
+    /\bplanning\s+mode\b/i
+];
+
+function looksLikePlanningRequest(text: string): boolean {
+    const trimmed = text.trim();
+    if (!trimmed) {
+        return false;
+    }
+    return /\b(plan|planning\s+mode|show\s+plan|progress\s+overview)\b/i.test(trimmed);
+}
+
+function isGenuineAnswer(command: ParsedCommand, sessionActive: boolean): boolean {
+    return command.type === 'default' && sessionActive;
+}
+
+function looksLikeStatusRequest(text: string): boolean {
+    const trimmed = text.trim();
+    if (!trimmed) {
+        return false;
+    }
+    return STATUS_INTENT_PATTERNS.some(pattern => pattern.test(trimmed));
+}
 
 @injectable()
 export class InterviewAgentParticipant implements OnActivate, OnDispose {
     protected participant?: vscode.ChatParticipant;
     protected outputChannel: vscode.OutputChannel;
+    protected readonly sessionManager = new InterviewSessionManager();
 
     constructor() {
         this.outputChannel = vscode.window.createOutputChannel('big-ai');
@@ -34,7 +65,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         }
 
         this.participant = vscode.chat.createChatParticipant(AI_PARTICIPANT_ID, this.handleRequest.bind(this));
-        
+
         this.participant.followupProvider = {
             provideFollowups: this.provideFollowups.bind(this)
         };
@@ -58,12 +89,29 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                     .map(part => part.value.value)
                     .join('\n');
 
-                if (responseText.trim()) {
-                    messages.push(vscode.LanguageModelChatMessage.Assistant(responseText));
+                const clean = this.stripExtensionRenderedContent(responseText);
+                if (clean.trim()) {
+                    messages.push(vscode.LanguageModelChatMessage.Assistant(clean));
                 }
             }
         }
         return messages;
+    }
+
+    protected stripExtensionRenderedContent(text: string): string {
+        let result = text;
+
+        result = result.replace(/\*\*Step\s+\d+\s+of\s+6\s*[\u2014-][^\n*]*\*\*\s*\n*/gi, '');
+
+        result = result.replace(/\*Steps?\s+\d+[\u2013\u2014-]\d+\s+detected[^\n]*\*\s*\n*/gi, '');
+
+        result = result.replace(/(?:^|\n)\|[^\n]+\|\s*\n\|[\s:|-]+\|(?:\s*\n\|[^\n]+\|)*/g, '');
+
+        result = result.replace(/✅\s*\*\*Interview complete\*\*[^\n]*\n*/gi, '');
+        result = result.replace(/Start a new session at any time[^\n]*\n*/gi, '');
+        result = result.replace(/No active interview session[^\n]*\n*/gi, '');
+
+        return result.trim();
     }
 
     protected buildInterviewTranscript(context: vscode.ChatContext): string {
@@ -77,7 +125,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
             }
 
             if (turn instanceof vscode.ChatResponseTurn) {
-                const responseText = this.responseTurnText(turn);
+                const responseText = this.stripExtensionRenderedContent(this.responseTurnText(turn));
                 if (responseText.trim()) {
                     lines.push(`Assistant: ${responseText}`);
                 }
@@ -102,6 +150,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         }
         const defaults: Record<string, string> = {
             interview: 'Please start a requirements interview for a UML class diagram.',
+            plan: 'Please show the current interview progress overview.',
             modify: 'Please suggest improvements to the current design.',
             explain: 'Please explain the current UML structure.',
             default: request.prompt
@@ -117,18 +166,55 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         token: vscode.CancellationToken
     ): Promise<vscode.ChatResult> {
         const parsedCommand = this.parseCommand(request.prompt);
-        const interviewState = this.deriveInterviewState(context, request.prompt, parsedCommand);
-        const allowedToolNames = interviewState.confirmed ? GENERATION_TOOL_NAMES : READ_ONLY_TOOL_NAMES;
+        const statusQuerySource = parsedCommand.type === 'interview' ? parsedCommand.argument : request.prompt;
+        const isStatusRequest = looksLikeStatusRequest(statusQuerySource);
+        const isPlanningRequest = parsedCommand.type === 'plan' || looksLikePlanningRequest(statusQuerySource);
 
-        this.outputChannel.appendLine(`[big-ai] Request: ${request.prompt}`);
+        const isBareInterview = parsedCommand.type === 'interview' && !parsedCommand.argument.trim();
+        const isNewSessionRequest = parsedCommand.type === 'interview' && (!this.sessionManager.isActive || isBareInterview);
+        const genuineAnswer = isGenuineAnswer(parsedCommand, this.sessionManager.isActive);
+
+        this.outputChannel.appendLine(`[big-ai] Request: "${request.prompt}"`);
         this.outputChannel.appendLine(`[big-ai] Command type: ${parsedCommand.type}`);
-        this.outputChannel.appendLine(`[big-ai] Interview phase: ${interviewState.phase}`);
-        this.outputChannel.appendLine(`[big-ai] Generation confirmed: ${interviewState.confirmed}`);
-        this.outputChannel.appendLine(`[big-ai] Conversation turn: ${context.history.length + 1}`);
+        this.outputChannel.appendLine(`[big-ai] Session active: ${this.sessionManager.isActive}, completed: ${this.sessionManager.isCompleted}`);
 
-        const [model] = await vscode.lm.selectChatModels({ vendor: 'copilot', family: 'gpt-4o' });
+        if (isNewSessionRequest && !isStatusRequest) {
+            this.sessionManager.startNew();
+            this.outputChannel.appendLine('[big-ai] New interview session started');
+        }
+
+        if (isStatusRequest || isPlanningRequest) {
+            const session = this.sessionManager.session;
+
+            if (this.sessionManager.isCompleted) {
+                stream.markdown('✅ **Interview complete** — your diagram has been created.\n\n');
+                stream.markdown(this.sessionManager.buildProgressSummary());
+            } else if (session?.isActive) {
+                stream.markdown(this.sessionManager.buildProgressSummary());
+            } else {
+                stream.markdown('No active interview session. Start one with `/interview`.');
+            }
+
+            return {
+                metadata: {
+                    command: parsedCommand.type,
+                    toolUsed: false,
+                    responseStreamed: true,
+                    commandArgument: statusQuerySource,
+                    statusOnly: true,
+                    planningOnly: isPlanningRequest,
+                    sessionActive: this.sessionManager.isActive,
+                    sessionCompleted: this.sessionManager.isCompleted,
+                    currentStepNumber: this.sessionManager.currentStepNumber
+                }
+            };
+        }
+
+        const [model] = await vscode.lm.selectChatModels({ vendor: 'copilot', family: 'gpt-4o-mini' });
         if (!model) {
-            stream.markdown('**Error**: No compatible chat model (GPT-4o) is available. Please ensure Copilot Chat is installed and authenticated.');
+            stream.markdown(
+                '**Error**: No compatible chat model (Claude 4.6 Sonnet) is available. Please ensure Copilot Chat is installed and authenticated.'
+            );
             return {
                 metadata: {
                     command: parsedCommand.type,
@@ -138,29 +224,80 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
             };
         }
 
+        let stepAdvancedThisTurn = false;
+        let generationConfirmedThisTurn = false;
+
+        if (genuineAnswer && this.sessionManager.isActive) {
+            const stepNum = this.sessionManager.currentStepNumber;
+            const isOnStep5 = stepNum === 5;
+            const isConfirmation = this.sessionManager.isConfirmationAnswer(request.prompt);
+
+            this.outputChannel.appendLine(`[big-ai] Genuine answer for step ${stepNum}, confirmation=${isConfirmation}`);
+
+            if (isOnStep5 && !isConfirmation) {
+                this.outputChannel.appendLine('[big-ai] Step 5: non-confirmation answer, holding on step 5');
+            } else {
+                const stepTitle = this.sessionManager.currentStep?.definition.title ?? '';
+                const summary = await this.generateStepSummary(model, stepTitle, request.prompt, token);
+
+                this.sessionManager.completeCurrentStep(summary);
+                this.sessionManager.advanceToNextStep();
+                stepAdvancedThisTurn = true;
+
+                if (isOnStep5 && isConfirmation) {
+                    generationConfirmedThisTurn = true;
+                    this.outputChannel.appendLine('[big-ai] Step 5 confirmed — generation runs on step 6 this turn');
+                }
+
+                this.outputChannel.appendLine(`[big-ai] Advanced to step ${this.sessionManager.currentStepNumber}`);
+            }
+        }
+
+        const stepNum = this.sessionManager.currentStepNumber;
+        const isOnStep6 = this.sessionManager.isActive && stepNum === 6;
+
+        const allowedToolNames: readonly string[] = isOnStep6 ? GENERATION_TOOL_NAMES : NO_TOOL_NAMES;
+        const requireToolCalls = isOnStep6;
+
+        const interviewState = this.deriveInterviewState(context, request.prompt, parsedCommand);
+
+        this.outputChannel.appendLine(`[big-ai] Step: ${stepNum}, tools: [${allowedToolNames.join(', ')}]`);
+
+        const session = this.sessionManager.session;
+
+        if (this.sessionManager.isCompleted) {
+            stream.markdown('✅ **Interview complete** — your diagram has been created.\n\n');
+            stream.markdown('Start a new session at any time with `/interview`.\n\n');
+        } else if (session?.isActive) {
+            stream.markdown(this.sessionManager.buildStepHeader());
+        }
+
         const historyMessages = this.buildHistoryMessages(context);
 
         const messages: vscode.LanguageModelChatMessage[] = [
-            vscode.LanguageModelChatMessage.User(this.buildSystemMessage(request, context, parsedCommand, interviewState)),
+            vscode.LanguageModelChatMessage.User(
+                this.buildSystemMessage(request, context, parsedCommand, interviewState)
+            ),
             ...historyMessages,
             vscode.LanguageModelChatMessage.User(this.buildUserMessage(request, parsedCommand))
         ];
 
         let toolUsed = false;
         let responseStreamed = false;
-        const requireToolCalls = interviewState.confirmed;
 
         try {
             let generationRetryRequested = false;
-
             const maxGenerationIterations = 3;
+
             for (let iteration = 0; iteration < maxGenerationIterations && !token.isCancellationRequested; iteration++) {
                 this.outputChannel.appendLine(`[big-ai] LM request iteration ${iteration + 1}/${maxGenerationIterations}`);
-                
+
                 const response = await model.sendRequest(
                     messages,
                     {
-                        tools: vscode.lm.tools.filter(tool => (allowedToolNames as readonly string[]).includes(tool.name))
+                        tools: vscode.lm.tools.filter(tool =>
+                            (allowedToolNames as readonly string[]).includes(tool.name)
+                        )
                     },
                     token
                 );
@@ -170,8 +307,11 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                 for await (const part of response.stream) {
                     if (part instanceof vscode.LanguageModelTextPart) {
                         if (!requireToolCalls) {
-                            stream.markdown(part.value);
-                            responseStreamed = true;
+                            const normalized = this.stripLeadingStepHeaderEcho(part.value);
+                            if (normalized.trim()) {
+                                stream.markdown(normalized);
+                                responseStreamed = true;
+                            }
                         }
                         continue;
                     }
@@ -183,9 +323,12 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
 
                 if (toolCalls.length === 0) {
                     this.outputChannel.appendLine(`[big-ai] No tool calls in iteration ${iteration + 1}, completing`);
+
                     if (requireToolCalls && !generationRetryRequested) {
                         generationRetryRequested = true;
-                        this.outputChannel.appendLine('[big-ai] Confirmed generation produced no tool call; deriving aggregate input as JSON');
+                        this.outputChannel.appendLine(
+                            '[big-ai] Step 6: no tool call from LLM; deriving aggregate input as JSON'
+                        );
                         const generatedInput = await this.requestGenerationInput(model, messages, token);
                         const toolResult = await vscode.lm.invokeTool(
                             UML_TOOL_NAMES.generateClassDiagram,
@@ -203,8 +346,11 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                         }
                         break;
                     }
+
                     if (requireToolCalls && !responseStreamed) {
-                        this.outputChannel.appendLine('[big-ai] Generation turn produced text instead of tool calls; suppressing model text');
+                        this.outputChannel.appendLine(
+                            '[big-ai] Step 6: generation turn produced text only; showing error'
+                        );
                         stream.markdown(
                             '**Error**: Generation was confirmed, but the diagram generator could not derive the generation input.'
                         );
@@ -234,16 +380,27 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                             ])
                         );
                     } catch (toolError) {
-                        this.outputChannel.appendLine(`[big-ai] Tool error: ${toolError instanceof Error ? toolError.message : String(toolError)}`);
+                        this.outputChannel.appendLine(
+                            `[big-ai] Tool error: ${toolError instanceof Error ? toolError.message : String(toolError)}`
+                        );
                         throw toolError;
                     }
                 }
             }
         } catch (error) {
-            this.outputChannel.appendLine(`[big-ai] Request error: ${error instanceof Error ? error.message : String(error)}`);
+            this.outputChannel.appendLine(
+                `[big-ai] Request error: ${error instanceof Error ? error.message : String(error)}`
+            );
             if (!responseStreamed) {
                 stream.markdown(`**Error**: ${error instanceof Error ? error.message : 'Unknown error occurred'}`);
             }
+        }
+
+        this.sessionManager.markFirstResponseSent();
+
+        if (this.sessionManager.isActive && this.sessionManager.currentStepNumber === 6) {
+            this.sessionManager.markComplete();
+            this.outputChannel.appendLine('[big-ai] Interview session completed after step 6');
         }
 
         this.outputChannel.appendLine(`[big-ai] Response complete (tool_used: ${toolUsed})`);
@@ -254,11 +411,126 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                 toolUsed,
                 responseStreamed,
                 commandArgument: parsedCommand.argument || '',
+                sessionActive: this.sessionManager.isActive,
+                sessionCompleted: this.sessionManager.isCompleted,
+                currentStepNumber: this.sessionManager.currentStepNumber,
+                stepAdvancedThisTurn,
+                generationConfirmedThisTurn,
                 interviewPhase: interviewState.phase,
-                awaitingConfirmation: interviewState.awaitingConfirmation,
-                generationConfirmed: interviewState.confirmed
+                awaitingConfirmation: this.sessionManager.isActive && this.sessionManager.currentStepNumber === 5,
+                generationConfirmed: isOnStep6
             }
         };
+    }
+
+    protected async generateStepSummary(
+        model: vscode.LanguageModelChat,
+        stepTitle: string,
+        userAnswer: string,
+        token: vscode.CancellationToken
+    ): Promise<string> {
+        const safeAnswer = userAnswer.slice(0, 300);
+        const prompt =
+            `In one short sentence (max 15 words), summarize what was decided for the UML diagram step "${stepTitle}" ` +
+            `based on this user answer: "${safeAnswer}". Reply with only the summary sentence, no leading punctuation, no quotes.`;
+
+        try {
+            const response = await model.sendRequest(
+                [vscode.LanguageModelChatMessage.User(prompt)],
+                {},
+                token
+            );
+            let text = '';
+            for await (const part of response.stream) {
+                if (part instanceof vscode.LanguageModelTextPart) {
+                    text += part.value;
+                }
+            }
+            const summary = text.trim().replace(/^["']|["']$/g, '');
+            return summary.slice(0, 100) || userAnswer.slice(0, 80).trim();
+        } catch {
+            return userAnswer.slice(0, 80).trim() + (userAnswer.length > 80 ? '…' : '');
+        }
+    }
+
+    protected async runSkipAheadDetection(
+        model: vscode.LanguageModelChat,
+        content: string,
+        token: vscode.CancellationToken
+    ): Promise<number> {
+        const stepsAnswered = await this.analyzeSkipAhead(model, content, token);
+        const currentStep = this.sessionManager.currentStepNumber; 
+
+        const consecutive: number[] = [];
+        for (let i = 0; i < stepsAnswered.length; i++) {
+            if (stepsAnswered[i] === currentStep + i) {
+                consecutive.push(stepsAnswered[i]);
+            } else {
+                break;
+            }
+        }
+
+        const stepsToProcess = consecutive.length > 0 ? consecutive : [currentStep];
+
+        for (const stepNumber of stepsToProcess) {
+            if (this.sessionManager.currentStepNumber !== stepNumber) break;
+            const stepTitle = this.sessionManager.currentStep?.definition.title ?? '';
+            const summary = await this.generateStepSummary(model, stepTitle, content, token);
+            this.sessionManager.completeCurrentStep(summary);
+            this.sessionManager.advanceToNextStep();
+        }
+
+        this.sessionManager.setAutoCompletedSteps(stepsToProcess);
+        return stepsToProcess.length;
+    }
+
+    protected async analyzeSkipAhead(
+        model: vscode.LanguageModelChat,
+        content: string,
+        token: vscode.CancellationToken
+    ): Promise<number[]> {
+        const safeContent = content.slice(0, 500);
+        const prompt =
+            `You are analysing a user's opening message to a UML class diagram interview ` +
+            `to determine which interview steps it already clearly answers.\n\n` +
+            `The interview steps are:\n` +
+            `1. Define the UML scope and main entities\n` +
+            `2. Model core classes and interfaces (specific class/interface names and types)\n` +
+            `3. Specify relationships between classes (at least one named relationship or direction)\n` +
+            `4. Refine associations and multiplicities (explicit values like "1..*", "0..1", "many")\n` +
+            `5. Confirm and create the diagram — always requires explicit user confirmation, NEVER auto-complete\n` +
+            `6. Review and next steps — always requires diagram creation, NEVER auto-complete\n\n` +
+            `Criteria (include a step ONLY when the message provides CLEAR, SPECIFIC information):\n` +
+            `- Step 1: system name or domain AND at least one entity name are mentioned\n` +
+            `- Step 2: two or more specific class or interface names are listed\n` +
+            `- Step 3: at least one relationship type or direction between named classes is stated\n` +
+            `- Step 4: explicit multiplicity values are given for at least one relationship\n\n` +
+            `User's message: "${safeContent}"\n\n` +
+            `Return ONLY a JSON array of answered step numbers (1–4 only, never 5 or 6). ` +
+            `If a step is only vaguely implied, do NOT include it. ` +
+            `Examples of valid responses: [1] or [1,2] or [1,2,3] or [1,2,3,4]`;
+
+        try {
+            const response = await model.sendRequest(
+                [vscode.LanguageModelChatMessage.User(prompt)],
+                {},
+                token
+            );
+            let text = '';
+            for await (const part of response.stream) {
+                if (part instanceof vscode.LanguageModelTextPart) {
+                    text += part.value;
+                }
+            }
+            const match = text.match(/\[[\d,\s]*\]/);
+            if (!match) return [];
+            const steps: unknown[] = JSON.parse(match[0]);
+            return (steps as number[])
+                .filter(n => typeof n === 'number' && n >= 1 && n <= 4)
+                .sort((a, b) => a - b);
+        } catch {
+            return [];
+        }
     }
 
     protected async requestGenerationInput(
@@ -335,6 +607,31 @@ Use only confirmed information from the transcript. Include relationships after 
             .join('\n');
     }
 
+    protected stripLeadingStepHeaderEcho(text: string): string {
+        const session = this.sessionManager.session;
+        if (!session?.isActive) {
+            return text;
+        }
+
+        const current = session.steps[session.currentStepIndex]?.definition;
+        if (!current) {
+            return text;
+        }
+
+        const escapedTitle = current.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const stepHeaderPattern = new RegExp(
+            `^\\s*(?:\\*\\*)?Step\\s*${current.number}\\s*of\\s*6\\s*[—-]\\s*${escapedTitle}(?:\\*\\*)?\\s*\\n+`,
+            'i'
+        );
+
+        let normalized = text;
+        while (stepHeaderPattern.test(normalized)) {
+            normalized = normalized.replace(stepHeaderPattern, '');
+        }
+
+        return normalized;
+    }
+
     protected parseCommand(prompt: string): ParsedCommand {
         const interviewMatch = prompt.match(COMMAND_PATTERNS.interview);
         if (interviewMatch) {
@@ -360,6 +657,21 @@ Use only confirmed information from the transcript. Include relationships after 
             };
         }
 
+        const planMatch = prompt.match(COMMAND_PATTERNS.plan);
+        if (planMatch) {
+            return {
+                type: 'plan',
+                argument: planMatch[1] || ''
+            };
+        }
+
+        if (!this.sessionManager.isActive && !this.sessionManager.isCompleted) {
+            return {
+                type: 'interview',
+                argument: prompt
+            };
+        }
+
         return {
             type: 'default',
             argument: prompt
@@ -371,84 +683,78 @@ Use only confirmed information from the transcript. Include relationships after 
         _context: vscode.ChatContext,
         _token: vscode.CancellationToken
     ): vscode.ChatFollowup[] {
+        const sessionCompleted = result.metadata?.sessionCompleted === true;
+        const sessionActive = result.metadata?.sessionActive === true;
+        const stepNumber = (result.metadata?.currentStepNumber as number | undefined) ?? 0;
+
+        const interviewFollowup = (label: string, argument: string): vscode.ChatFollowup => ({
+            label,
+            prompt: argument,
+            command: 'interview'
+        });
+
+        const planFollowup = (label: string, argument: string): vscode.ChatFollowup => ({
+            label,
+            prompt: argument,
+            command: 'plan'
+        });
+
+        if (sessionCompleted) {
+            return [planFollowup('📋 Show progress', '/plan'), interviewFollowup('🔄 Start a new interview', 'create a UML class diagram')];
+        }
+
+        if (sessionActive) {
+            if (stepNumber === 5) {
+                return [
+                    planFollowup('📋 Show progress', '/plan'),
+                    { prompt: 'yes', label: '✅ Yes, create the diagram' },
+                    interviewFollowup('✏️ Revise summary', 'Please revise the summary')
+                ];
+            }
+
+            return [
+                planFollowup('📋 Show progress', '/plan'),
+                interviewFollowup('Get clarification', 'Can you clarify what you mean?'),
+                interviewFollowup('Add context', 'Let me add more context')
+            ];
+        }
+
         const commandType = (result.metadata?.command ?? 'default') as string;
         const awaitingConfirmation = result.metadata?.awaitingConfirmation === true;
 
         const followupsByCommand: Record<string, vscode.ChatFollowup[]> = {
             interview: awaitingConfirmation
                 ? [
-                      {
-                          prompt: 'generate',
-                          label: 'Generate'
-                      },
-                      {
-                          prompt: '/interview Revise the summary',
-                          label: 'Revise summary'
-                      },
-                      {
-                          prompt: '/interview Add missing details',
-                          label: 'Add details'
-                      }
+                      planFollowup('📋 Show progress', '/plan'),
+                      { prompt: 'generate', label: 'Generate' },
+                      interviewFollowup('Revise summary', 'Revise the summary'),
+                      interviewFollowup('Add details', 'Add missing details')
                   ]
                 : [
-                      {
-                          prompt: '/interview Add the main entities',
-                          label: 'Add entities'
-                      },
-                      {
-                          prompt: '/interview Define relationships',
-                          label: 'Define relationships'
-                      },
-                      {
-                          prompt: '/interview Add attributes and operations',
-                          label: 'Add details'
-                      }
+                      planFollowup('📋 Show progress', '/plan'),
+                      interviewFollowup('▶️ Start interview', 'create a UML class diagram'),
+                      interviewFollowup('Add entities', 'Add the main entities'),
+                      interviewFollowup('Define relationships', 'Define relationships')
                   ],
             modify: [
-                {
-                    prompt: '/interview How does this improve the design?',
-                    label: 'Explain improvements'
-                },
-                {
-                    prompt: '/modify Apply another improvement',
-                    label: 'More improvements'
-                },
-                {
-                    prompt: '/explain Why is this a best practice?',
-                    label: 'Learn the principle'
-                }
+                interviewFollowup('Explain improvements', 'How does this improve the design?'),
+                { prompt: '/modify Apply another improvement', label: 'More improvements' },
+                { prompt: '/explain Why is this a best practice?', label: 'Learn the principle' }
             ],
             explain: [
-                {
-                    prompt: '/interview How is this applied here?',
-                    label: 'See in context'
-                },
-                {
-                    prompt: '/explain Show a related concept',
-                    label: 'Learn more'
-                },
-                {
-                    prompt: '/modify Apply this pattern',
-                    label: 'Use this pattern'
-                }
+                interviewFollowup('See in context', 'How is this applied here?'),
+                { prompt: '/explain Show a related concept', label: 'Learn more' },
+                { prompt: '/modify Apply this pattern', label: 'Use this pattern' }
             ],
             default: [
-                {
-                    prompt: '/interview Let\'s analyze this design',
-                    label: 'Deep dive'
-                },
-                {
-                    prompt: '/modify How could we improve this?',
-                    label: 'Get suggestions'
-                },
-                {
-                    prompt: '/explain Clarify a concept',
-                    label: 'Learn more'
-                }
+                planFollowup('📋 Show progress', '/plan'),
+                interviewFollowup('▶️ Start interview', 'create a UML class diagram'),
+                { prompt: '/modify How could we improve this?', label: 'Get suggestions' },
+                { prompt: '/explain Clarify a concept', label: 'Learn more' }
             ]
         };
 
-        return followupsByCommand[commandType] || followupsByCommand['default'];
+        return followupsByCommand[commandType] ?? followupsByCommand['default'];
     }
 
     protected deriveInterviewState(context: vscode.ChatContext, prompt: string, command: ParsedCommand): InterviewState {
@@ -513,37 +819,50 @@ Use only confirmed information from the transcript. Include relationships after 
         return false;
     }
 
-    protected previousSummaryHasRelationships(context: vscode.ChatContext): boolean {
-        return this.previousSummaryLineHasContent(context, 'Relationships');
-    }
+    protected buildInterviewStateInstruction(context: vscode.ChatContext, interviewState: InterviewState): string {
+        const session = this.sessionManager.session;
 
-    protected previousSummaryHasEntities(context: vscode.ChatContext): boolean {
-        return this.previousSummaryLineHasContent(context, 'Entities');
-    }
-
-    protected previousSummaryLineHasContent(context: vscode.ChatContext, label: string): boolean {
-        for (const turn of [...context.history].reverse()) {
-            if (!(turn instanceof vscode.ChatResponseTurn)) {
-                continue;
-            }
-
-            const responseText = this.responseTurnText(turn);
-            if (!responseText.toLowerCase().includes('summary')) {
-                return false;
-            }
-
-            const match = responseText.match(new RegExp(`-\\s*${label}:\\s*(.+)`, 'i'));
-            if (!match) {
-                return false;
-            }
-
-            return !/^(none|n\/a|no relationships|not specified|missing|unknown)\.?$/i.test(match[1].trim());
+        if (!session?.isActive) {
+            return this.buildLegacyInterviewStateInstruction(context, interviewState);
         }
 
-        return false;
+        const stepIndex = session.currentStepIndex;
+        const step = session.steps[stepIndex];
+        const stepNumber = stepIndex + 1;
+        const isOnStep5 = stepNumber === 5;
+        const isOnStep6 = stepNumber === 6;
+
+        const toolRule = isOnStep6
+            ? 'The user confirmed the diagram on the previous turn. Call `biguml-generate-class-diagram` exactly once with ALL confirmed information from the transcript. This tool creates the .uml file and all nodes, members, and relationships in one call. Do not read the file first.'
+            : isOnStep5
+            ? 'DO NOT call any tools on this turn. Show a concise summary of everything collected so far, then ask exactly: "Shall I create the diagram with these elements?"'
+            : 'DO NOT call any tools on this turn. Ask exactly one question scoped to this step. Do not ask about content that belongs to a later step.';
+
+        return `## Interview Session — Step ${stepNumber} of 6
+
+**Current step**: ${step.definition.title}
+
+**Step scope instruction**: ${step.definition.scopeHint}
+
+${this.sessionManager.buildPriorStepsContext()}
+**IMPORTANT — do NOT repeat the step number or title in your response.** The extension already displays "Step ${stepNumber} of 6 — ${step.definition.title}" as a fixed header above your message. Starting your reply with a similar heading would duplicate it.
+
+**Tools this turn**: ${isOnStep6 ? '`biguml-generate-class-diagram`' : 'none'}
+
+${toolRule}
+
+## Chat History Transcript
+Use this as the source of truth for requirements collected so far. Do not invent missing information.
+If the last user message is a .uml path, treat it as the target file only — not as attribute or operation detail.
+Short acknowledgements (yes, ok, sure, use those, sounds good) confirm the concrete items proposed in the immediately preceding assistant turn.
+
+${this.buildInterviewTranscript(context)}`;
     }
 
-    protected buildInterviewStateInstruction(context: vscode.ChatContext, interviewState: InterviewState): string {
+    protected buildLegacyInterviewStateInstruction(
+        context: vscode.ChatContext,
+        interviewState: InterviewState
+    ): string {
         const availableTools = interviewState.confirmed
             ? 'generateClassDiagram only'
             : 'readUmlFile only';
@@ -576,56 +895,64 @@ ${this.buildInterviewTranscript(context)}`;
         command: ParsedCommand,
         interviewState: InterviewState
     ): string {
-        const commandContexts = {
-            interview: `## Interview Mode Activation
-                        You are in INTERVIEW mode. Your goals:
-                        1. Gather class diagram requirements in this order: scope, entities, relationships, details, confirmation.
-                        2. Ask exactly one clarifying question per assistant response when information is missing.
-                        3. Avoid compound prompts such as multiple bullet questions, "for example" question lists, or several alternatives that all need answers.
-                        4. Show the required summary before generation.
-                        5. Generate only after explicit confirmation of a previous summary.
-                        6. Use registered tools only for generation.`,
+        const sessionIsActive = this.sessionManager.session?.isActive === true;
+
+        const commandContexts: Record<string, string> = {
+            interview: sessionIsActive
+                ? `## Interview Mode — Active Session
+                    You are guiding the user through a fixed 6-step UML class diagram interview.
+                    Each step has a strict scope — do not ask about content belonging to a later step.
+                    Ask exactly one focused question per response.
+                    Do not offer examples that require multiple answers.`
+                                    : `## Interview Mode Activation
+                    You are in INTERVIEW mode. Your goals:
+                    1. Gather class diagram requirements in this order: scope, entities, relationships, details, confirmation.
+                    2. Ask exactly one clarifying question per assistant response when information is missing.
+                    3. Avoid compound prompts such as multiple bullet questions or several alternatives that all need answers.
+                    4. Show the required summary before generation.
+                    5. Generate only after explicit confirmation of a previous summary.`,
 
             modify: `## Modification Mode Activation
-                        You are in MODIFY mode. Your goals:
-                        1. Identify specific issues or improvement opportunities
-                        2. Propose concrete, implementable solutions
-                        3. Provide before/after comparisons
-                        4. Include code examples where relevant
-                        5. Explain the benefits of each recommendation
+                    You are in MODIFY mode. Your goals:
+                    1. Identify specific issues or improvement opportunities
+                    2. Propose concrete, implementable solutions
+                    3. Provide before/after comparisons
+                    4. Include code examples where relevant
+                    5. Explain the benefits of each recommendation
 
-                        Format for suggestions:
-                        - Current Issue: [specific problem]
-                        - Recommendation: [solution]
-                        - Implementation: [how to apply]
-                        - Benefits: [why this helps]`,
+                    Format for suggestions:
+                    - Current Issue: [specific problem]
+                    - Recommendation: [solution]
+                    - Implementation: [how to apply]
+                    - Benefits: [why this helps]`,
 
             explain: `## Explanation Mode Activation
-                        You are in EXPLAIN mode. Your goals:
-                        1. Provide clear, well-structured definitions
-                        2. Use concrete examples from UML/OOP
-                        3. Show relationships to related concepts
-                        4. Provide practical applications
-                        5. Make complex topics accessible
+                    You are in EXPLAIN mode. Your goals:
+                    1. Provide clear, well-structured definitions
+                    2. Use concrete examples from UML/OOP
+                    3. Show relationships to related concepts
+                    4. Provide practical applications
+                    5. Make complex topics accessible
 
-                        Format for explanations:
-                        - Definition: [clear, concise]
-                        - Key Characteristics: [important properties]
-                        - Practical Examples: [real-world usage]
-                        - Related Concepts: [connections]
-                        - When to Use: [applicable scenarios]`,
+                    Format for explanations:
+                    - Definition: [clear, concise]
+                    - Key Characteristics: [important properties]
+                    - Practical Examples: [real-world usage]
+                    - Related Concepts: [connections]
+                    - When to Use: [applicable scenarios]`,
 
             default: `## General Conversation Mode
-                        Respond helpfully to UML-related questions while maintaining expert-level knowledge.
-                        Proactively offer to dive deeper using /interview, /modify, or /explain modes.`
-                                };
+                    Respond helpfully to UML-related questions while maintaining expert-level knowledge.
+                    Proactively offer to dive deeper using /interview, /modify, or /explain modes.`
+                            };
 
-        const modeContext = commandContexts[command.type] || commandContexts['default'];
-        
-        const referenceInfo = request.references.length > 0 
-            ? `Attached references: ${request.references.length} file(s) or context available for analysis.`
-            : 'No attached references.';
-        
+        const modeContext = commandContexts[command.type] ?? commandContexts['default'];
+
+        const referenceInfo =
+            request.references.length > 0
+                ? `Attached references: ${request.references.length} file(s) or context available for analysis.`
+                : 'No attached references.';
+
         return `${SYSTEM_PROMPT}
 
 ---
@@ -640,7 +967,7 @@ ${this.buildInterviewStateInstruction(context, interviewState)}
 
 ## Context Information
 - ${referenceInfo}`;
-}
+    }
 
 
     dispose(): void {

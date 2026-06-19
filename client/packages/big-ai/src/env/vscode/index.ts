@@ -10,5 +10,6 @@
 export * from './ai.module.js';
 export * from './ai-tool-registry.js';
 export * from './interview-agent.participant.js';
+export * from './interview-session-manager.js';
 export * from './model-server-client.js';
 export * from './tools/index.js';
