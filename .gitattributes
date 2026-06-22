@@ -1,8 +1,0 @@
-# Generated files should always use CRLF line endings
-client/packages/big-ai/src/env/common/ai.constants.ts text eol=crlf
-client/packages/big-ai/src/env/common/tool-types.ts text eol=crlf
-
-# All TypeScript and JSON files use CRLF
-*.ts text eol=crlf
-*.tsx text eol=crlf
-*.json text eol=crlf
