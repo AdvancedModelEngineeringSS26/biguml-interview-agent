@@ -49,6 +49,13 @@ const RELATION_TYPE_MAP: Record<UmlRelationType, string> = {
 
 const MULTIPLICITY_TYPES = new Set<UmlRelationType>(['Association', 'Aggregation', 'Composition']);
 
+// Aggregation/Composition are aliases of Association distinguished only by the
+// source-end aggregation marker. Anything not listed here is not an alias.
+const AGGREGATION_KIND: Partial<Record<UmlRelationType, 'SHARED' | 'COMPOSITE'>> = {
+    Aggregation: 'SHARED',
+    Composition: 'COMPOSITE'
+};
+
 const NAMED_TYPES = new Set<UmlRelationType>([
     'Association', 'Aggregation', 'Composition', 'Abstraction', 'Dependency',
     'InterfaceRealization', 'Realization', 'Substitution', 'Usage'
@@ -134,13 +141,17 @@ export class AddRelationTool implements vscode.LanguageModelTool<AddRelationInpu
         const id = generateId();
         const ref = (nodeId: string) => ({ __type: 'Reference', __refType: 'Node', __value: nodeId });
 
+        const aggregationKind = AGGREGATION_KIND[relationType];
         const relation: Record<string, unknown> = {
-            __type: relationType,
+            __type: aggregationKind ? 'Association' : relationType,
             __id: id,
             source: ref(sourceNode.__id),
             target: ref(targetNode.__id),
-            relationType: RELATION_TYPE_MAP[relationType]
+            relationType: aggregationKind ? 'ASSOCIATION' : RELATION_TYPE_MAP[relationType]
         };
+        if (aggregationKind) {
+            relation['sourceAggregation'] = aggregationKind;
+        }
 
         if (NAMED_TYPES.has(relationType) && relationName !== undefined) {
             relation['name'] = relationName;
