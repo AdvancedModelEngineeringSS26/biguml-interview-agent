@@ -178,7 +178,7 @@ User: workspace/webapp_deployment.uml
 Assistant: Summary
 - Diagram file: workspace/webapp_deployment.uml
 - Scope: web app production environment
-- Entities: Web Server (Node), Database Server (Node), Application Artifact (Artifact)
+- Entities: Web Server (Device), Database Server (Device), Application Artifact (Artifact)
 - Relationships: Web Server --HTTPS--> Database Server
 - Assumptions: UML deployment diagram
 - Missing information: none

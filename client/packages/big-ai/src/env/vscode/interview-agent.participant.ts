@@ -534,7 +534,7 @@ Use only confirmed information from the transcript. Include relationships after 
     }
 
     protected isDeploymentIntent(text: string): boolean {
-        return /\b(deployment|device|node|artifact|execution\s*environment|communication\s*path)\b/i.test(text);
+        return /\b(deployment|device|execution\s*environment|communication\s*path)\b/i.test(text);
     }
 
     protected deriveInterviewPhase(

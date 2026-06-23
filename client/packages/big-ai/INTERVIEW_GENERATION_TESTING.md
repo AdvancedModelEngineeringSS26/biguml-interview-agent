@@ -1,6 +1,6 @@
 # Interview Generation Testing
 
-Use this guide to verify that `/interview` gathers enough information before it generates a UML class diagram.
+Use this guide to verify that `/interview` gathers enough information before it generates a UML class or deployment diagram.
 
 ## 1. Static Check
 
@@ -119,7 +119,7 @@ Try:
 
 Expected behavior:
 
-- The agent explains that AI-assisted generation currently supports UML class diagrams only.
+- The agent explains that AI-assisted generation currently supports UML class and deployment diagrams only.
 
 ### Hallucination Pressure
 
