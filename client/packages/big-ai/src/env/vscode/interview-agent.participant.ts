@@ -148,6 +148,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
 
         let toolUsed = false;
         let responseStreamed = false;
+        let streamedText = '';
         const requireToolCalls = interviewState.confirmed;
 
         try {
@@ -171,6 +172,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                     if (part instanceof vscode.LanguageModelTextPart) {
                         if (!requireToolCalls) {
                             stream.markdown(part.value);
+                            streamedText += part.value;
                             responseStreamed = true;
                         }
                         continue;
@@ -256,7 +258,8 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                 commandArgument: parsedCommand.argument || '',
                 interviewPhase: interviewState.phase,
                 awaitingConfirmation: interviewState.awaitingConfirmation,
-                generationConfirmed: interviewState.confirmed
+                generationConfirmed: interviewState.confirmed,
+                presentedSummary: this.looksLikeGenerationSummary(streamedText)
             }
         };
     }
@@ -496,48 +499,43 @@ Use only confirmed information from the transcript. Include relationships after 
         return /\b(generate|create|confirm|confirmed|yes|yep|looks good|go ahead|proceed)\b/i.test(prompt);
     }
 
-    protected previousAssistantRequestedGeneration(context: vscode.ChatContext): boolean {
-        for (const turn of [...context.history].reverse()) {
-            if (!(turn instanceof vscode.ChatResponseTurn)) {
-                continue;
-            }
-
-            const responseText = this.responseTurnText(turn).toLowerCase();
-            return (
-                responseText.includes('summary') &&
-                responseText.includes('reply "generate"') &&
-                /missing information:\s*(none|no missing information)/i.test(responseText)
-            );
+    protected looksLikeGenerationSummary(text: string): boolean {
+        if (!text) {
+            return false;
         }
 
-        return false;
+        const hasSummary = /\bsummary\b/i.test(text) || /^\s*-?\s*diagram file:/im.test(text);
+        const invitesGeneration =
+            /reply\b[\s\S]*?\bgenerate\b/i.test(text) ||
+            /\bgenerate\b[\s\S]*?\b(diagram|to create)\b/i.test(text);
+        const noMissingInfo =
+            /missing info(?:rmation)?:?\s*(none|no\b)/i.test(text) ||
+            /\b(nothing|no info\w*)\s+(?:is\s+)?missing\b/i.test(text);
+
+        return hasSummary && invitesGeneration && noMissingInfo;
     }
 
-    protected previousSummaryHasRelationships(context: vscode.ChatContext): boolean {
-        return this.previousSummaryLineHasContent(context, 'Relationships');
-    }
+    protected previousAssistantRequestedGeneration(context: vscode.ChatContext): boolean {
+        const recentHistory = context.history.slice(-MAX_HISTORY_TURNS);
 
-    protected previousSummaryHasEntities(context: vscode.ChatContext): boolean {
-        return this.previousSummaryLineHasContent(context, 'Entities');
-    }
-
-    protected previousSummaryLineHasContent(context: vscode.ChatContext, label: string): boolean {
-        for (const turn of [...context.history].reverse()) {
+        for (const turn of [...recentHistory].reverse()) {
             if (!(turn instanceof vscode.ChatResponseTurn)) {
                 continue;
             }
 
-            const responseText = this.responseTurnText(turn);
-            if (!responseText.toLowerCase().includes('summary')) {
-                return false;
+            const recorded = turn.result?.metadata?.presentedSummary;
+            if (recorded === true) {
+                return true;
+            }
+            if (recorded === false) {
+                // The agent's own non-summary / error turn — skip so it cannot poison the gate.
+                continue;
             }
 
-            const match = responseText.match(new RegExp(`-\\s*${label}:\\s*(.+)`, 'i'));
-            if (!match) {
-                return false;
+            // Turn predates the recorded flag (or was restored after a reload): use the text heuristic.
+            if (this.looksLikeGenerationSummary(this.responseTurnText(turn))) {
+                return true;
             }
-
-            return !/^(none|n\/a|no relationships|not specified|missing|unknown)\.?$/i.test(match[1].trim());
         }
 
         return false;
