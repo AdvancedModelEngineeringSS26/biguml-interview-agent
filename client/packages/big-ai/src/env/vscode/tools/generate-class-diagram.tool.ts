@@ -268,9 +268,6 @@ function addProperty(
     if (property.typeName !== undefined) {
         const typeName = validateRequiredString(property.typeName, 'property.typeName');
         const typeNode = findOrCreateTypeNode(diagram, nodesByName, typeName);
-        if (!typeNode) {
-            throw new Error(`No type named "${typeName}" found for property "${property.name}".`);
-        }
         member.propertyType = { __type: 'Reference', __refType: 'DataTypeReference', __value: typeNode.__id };
     }
     owner.properties.push(member);
@@ -291,14 +288,15 @@ function addOperation(
     });
 }
 
-function findOrCreateTypeNode(diagram: UmlDiagramFile, nodesByName: Map<string, UmlNode>, typeName: string): UmlNode | undefined {
+function findOrCreateTypeNode(diagram: UmlDiagramFile, nodesByName: Map<string, UmlNode>, typeName: string): UmlNode {
     const existing = nodesByName.get(typeName);
-    if (existing || !COMMON_PRIMITIVE_TYPES.has(typeName)) {
+    if (existing) {
         return existing;
     }
-    const primitive = addNode(diagram, { name: typeName, elementType: 'PrimitiveType' });
-    nodesByName.set(typeName, primitive);
-    return primitive;
+    const elementType: UmlNodeType = COMMON_PRIMITIVE_TYPES.has(typeName) ? 'PrimitiveType' : 'Class';
+    const created = addNode(diagram, { name: typeName, elementType });
+    nodesByName.set(typeName, created);
+    return created;
 }
 
 function addRelationship(
