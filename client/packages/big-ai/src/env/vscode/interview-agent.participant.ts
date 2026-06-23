@@ -128,7 +128,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
 
         const [model] = await vscode.lm.selectChatModels({ vendor: 'copilot' });
         if (!model) {
-            stream.markdown('**Error**: No compatible chat model (GPT-4o) is available. Please ensure Copilot Chat is installed and authenticated.');
+            stream.markdown('**Error**: No compatible Copilot chat model is available. Please ensure GitHub Copilot Chat is installed and authenticated.');
             return {
                 metadata: {
                     command: parsedCommand.type,
