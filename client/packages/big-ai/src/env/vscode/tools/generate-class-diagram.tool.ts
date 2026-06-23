@@ -143,10 +143,21 @@ export class GenerateClassDiagramTool implements vscode.LanguageModelTool<Genera
             return createToolResult(`Error: ${e instanceof Error ? e.message : String(e)}`);
         }
 
+        const declaredNames = new Set(input.entities.map(entity => entity.name));
+        const inferredClasses = diagram.diagram.entities
+            .filter(node => node.__type === 'Class' && !declaredNames.has(node.name))
+            .map(node => node.name);
+
         this.outputChannel.appendLine(
             `[big-ai] Generated class diagram: ${uri.fsPath} (${input.entities.length} entities, ${input.relationships?.length ?? 0} relationships)`
         );
-        return createToolResult(`Generated UML class diagram at ${uri.fsPath}`);
+        const baseMessage = `Generated UML class diagram at ${uri.fsPath}`;
+        const message =
+            inferredClasses.length === 0
+                ? baseMessage
+                : `${baseMessage}. Auto-created ${inferredClasses.length} undeclared ` +
+                  `type${inferredClasses.length === 1 ? '' : 's'} referenced by a property: ${inferredClasses.join(', ')}.`;
+        return createToolResult(message);
     }
 }
 
