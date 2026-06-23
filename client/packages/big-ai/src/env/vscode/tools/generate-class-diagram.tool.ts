@@ -92,6 +92,13 @@ const RELATION_TYPE_MAP: Record<UmlRelationType, string> = {
     Usage: 'USAGE'
 };
 
+// Aggregation/Composition are aliases of Association distinguished only by the
+// source-end aggregation marker. Anything not listed here is not an alias.
+const AGGREGATION_KIND: Partial<Record<UmlRelationType, 'SHARED' | 'COMPOSITE'>> = {
+    Aggregation: 'SHARED',
+    Composition: 'COMPOSITE'
+};
+
 @injectable()
 export class GenerateClassDiagramTool implements vscode.LanguageModelTool<GenerateClassDiagramInput> {
     constructor(@inject(OutputChannel) protected readonly outputChannel: OutputChannel) {}
@@ -324,13 +331,17 @@ function addRelationship(
         throw new Error(`No target element named "${relationship.targetName}" found for relationship.`);
     }
 
+    const aggregationKind = AGGREGATION_KIND[relationship.relationType];
     const relation: Record<string, unknown> = {
-        __type: relationship.relationType,
+        __type: aggregationKind ? 'Association' : relationship.relationType,
         __id: generateId(),
         source: ref(source.__id),
         target: ref(target.__id),
-        relationType: RELATION_TYPE_MAP[relationship.relationType]
+        relationType: aggregationKind ? 'ASSOCIATION' : RELATION_TYPE_MAP[relationship.relationType]
     };
+    if (aggregationKind) {
+        relation['sourceAggregation'] = aggregationKind;
+    }
 
     if (NAMED_RELATION_TYPES.has(relationship.relationType) && relationship.name !== undefined) {
         relation['name'] = relationship.name;
