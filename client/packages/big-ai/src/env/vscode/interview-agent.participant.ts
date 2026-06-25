@@ -290,8 +290,19 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                             }
                         }
                     } catch (toolError) {
-                        this.outputChannel.appendLine(`[big-ai] Tool error: ${toolError instanceof Error ? toolError.message : String(toolError)}`);
-                        throw toolError;
+                        const msg = toolError instanceof Error ? toolError.message : String(toolError);
+                        this.outputChannel.appendLine(`[big-ai] Tool error (${toolCall.name}): ${msg}`);
+                        if (requireToolCalls || token.isCancellationRequested || /cancell?ed/i.test(msg)) {
+                            throw toolError;
+                        }
+                        // In /modify and interview mode, return the failure to the model so it can correct course
+                        // on the next iteration. Every tool_call must still receive a result, or the follow-up
+                        // request is rejected ("messages with role 'tool' must follow a message with 'tool_calls'").
+                        toolResultParts.push(
+                            new vscode.LanguageModelToolResultPart(toolCall.callId, [
+                                new vscode.LanguageModelTextPart(`Error: ${msg}`)
+                            ])
+                        );
                     }
                 }
                 if (toolResultParts.length > 0) {
