@@ -231,10 +231,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                         break;
                     }
                     this.outputChannel.appendLine('[big-ai] Generating from stored proposal');
-                    const generationTool =
-                        proposal.diagramType === 'DEPLOYMENT'
-                            ? UML_TOOL_NAMES.generateDeploymentDiagram
-                            : UML_TOOL_NAMES.generateClassDiagram;
+                    const generationTool = this.generationToolName(proposal.diagramType);
                     const toolResult = await vscode.lm.invokeTool(
                         generationTool,
                         {
@@ -461,7 +458,10 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         context: vscode.ChatContext,
         prompt: string,
         command: ParsedCommand
-    ): 'CLASS' | 'DEPLOYMENT' {
+    ): 'CLASS' | 'DEPLOYMENT' | 'ACTIVITY' {
+        if (this.isActivityIntent(prompt) || (command.type === 'interview' && this.isActivityIntent(command.argument))) {
+            return 'ACTIVITY';
+        }
         if (this.isDeploymentIntent(prompt) || (command.type === 'interview' && this.isDeploymentIntent(command.argument))) {
             return 'DEPLOYMENT';
         }
@@ -475,6 +475,9 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                 text = this.responseTurnText(turn);
             }
 
+            if (this.isActivityIntent(text)) {
+                return 'ACTIVITY';
+            }
             if (this.isDeploymentIntent(text)) {
                 return 'DEPLOYMENT';
             }
@@ -488,6 +491,21 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
 
     protected isDeploymentIntent(text: string): boolean {
         return /\b(deployment|device|execution\s*environment|communication\s*path)\b/i.test(text);
+    }
+
+    protected isActivityIntent(text: string): boolean {
+        return /\b(activity\s*diagram|activity|workflow|process\s*flow|swimlane|swim\s*lane|control\s*flow|decision|merge|fork|join|initial\s*node|final\s*node)\b/i.test(text);
+    }
+
+    protected generationToolName(diagramType: 'CLASS' | 'DEPLOYMENT' | 'ACTIVITY'): string {
+        switch (diagramType) {
+            case 'ACTIVITY':
+                return UML_TOOL_NAMES.generateActivityDiagram;
+            case 'DEPLOYMENT':
+                return UML_TOOL_NAMES.generateDeploymentDiagram;
+            case 'CLASS':
+                return UML_TOOL_NAMES.generateClassDiagram;
+        }
     }
 
     protected deriveInterviewPhase(
@@ -516,7 +534,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
 
         const stateRule = interviewState.awaitingConfirmation
             ? 'A complete proposal has already been shown to the user. If the user approves in any wording, call biguml-confirm-generation (no arguments). If the user requests any change, call biguml-propose-diagram again with the corrected specification. Otherwise answer their question or ask one clarifying question. Do not write the summary yourself.'
-            : 'No proposal has been shown yet. Continue the interview by asking exactly one clear question, or call biguml-propose-diagram once scope, entities, relationships, details, and the target .uml file are all known. Do not call biguml-confirm-generation. You may offer concrete suggestions, but label them as suggestions the user can accept or change.';
+            : 'No proposal has been shown yet. Continue the interview by asking exactly one clear question, or call biguml-propose-diagram once scope, entities, relationships, details, and the target .uml file are all known. For ACTIVITY diagrams, known details include actions, initial/final nodes, control-flow sequence, decision guards, fork/join parallelism, and optional swimlanes/partitions when applicable. Do not call biguml-confirm-generation. You may offer concrete suggestions, but label them as suggestions the user can accept or change.';
 
         return `## Interview State
 - Phase: ${interviewState.phase}
@@ -530,6 +548,7 @@ ${stateRule}
 Use this transcript as the source of truth for requirements. Do not invent missing requirements.
 If the last user message is a .uml path, treat it as the target diagram file, not as attribute or operation details.
 Only generate attributes or operations that the user explicitly named, explicitly accepted from the previous assistant suggestion, or explicitly requested no details.
+For ACTIVITY diagrams, do not generate unsupported concepts. Ask to map them to supported activity nodes or omit them before proposing.
 Short acknowledgements such as yes, ok, sure, use those, that works, and sounds good confirm the concrete items suggested in the immediately previous assistant turn.
 
 ${this.buildInterviewTranscript(history)}`;
@@ -549,7 +568,8 @@ ${this.buildInterviewTranscript(history)}`;
                         3. Avoid compound prompts such as multiple bullet questions, "for example" question lists, or several alternatives that all need answers.
                         4. When scope, entities, relationships, details, and the target .uml file are all known, call biguml-propose-diagram with the complete specification. Do not hand-write the summary; the tool renders it.
                         5. After a proposal is shown, call biguml-confirm-generation when the user approves in any wording, or call biguml-propose-diagram again if they request changes.
-                        6. Generate only through these tools; never write raw UML, JSON, or a summary yourself.`,
+                        6. Generate only through these tools; never write raw UML, JSON, or a summary yourself.
+                        7. For ACTIVITY diagrams, collect actions as OpaqueAction nodes, starts as InitialNode, process completions as ActivityFinalNode or FlowFinalNode, branches as DecisionNode/MergeNode with guarded ControlFlows, parallelism as ForkNode/JoinNode, and swimlanes as ActivityPartition nodes.`,
 
             modify: `## Modification Mode Activation
                         You are in MODIFY mode. Your goals:

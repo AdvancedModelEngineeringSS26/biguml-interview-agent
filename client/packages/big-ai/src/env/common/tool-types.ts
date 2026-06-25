@@ -20,7 +20,7 @@ export interface ParsedCommand {
 
 export type InterviewPhase = 'scope' | 'entities' | 'relationships' | 'details' | 'confirmation' | 'generation';
 
-export type DiagramType = 'CLASS' | 'DEPLOYMENT';
+export type DiagramType = 'CLASS' | 'DEPLOYMENT' | 'ACTIVITY';
 
 export interface InterviewRelationship {
     source: string;
@@ -45,6 +45,24 @@ export type UmlNodeType = 'Class' | 'AbstractClass' | 'Interface' | 'Enumeration
 
 export type DeploymentNodeType = 'Artifact' | 'Device' | 'ExecutionEnvironment' | 'DeploymentNode' | 'DeploymentSpecification' | 'DeploymentPackage' | 'DeploymentModel';
 
+export type ActivityNodeType =
+    | 'Activity'
+    | 'ActivityPartition'
+    | 'OpaqueAction'
+    | 'AcceptEventAction'
+    | 'SendSignalAction'
+    | 'InitialNode'
+    | 'DecisionNode'
+    | 'MergeNode'
+    | 'JoinNode'
+    | 'ForkNode'
+    | 'ActivityFinalNode'
+    | 'FlowFinalNode'
+    | 'CentralBufferNode'
+    | 'ActivityParameterNode'
+    | 'InputPin'
+    | 'OutputPin';
+
 export type UmlRelationType =
     | 'Association' | 'Aggregation' | 'Composition'
     | 'Abstraction' | 'Dependency' | 'Generalization'
@@ -52,6 +70,8 @@ export type UmlRelationType =
     | 'Realization' | 'Substitution' | 'Usage';
 
 export type DeploymentRelationType = 'CommunicationPath' | 'Deployment' | 'Dependency' | 'Generalization' | 'Manifestation';
+
+export type ActivityRelationType = 'ControlFlow';
 
 export interface CreateUmlFileInput {
     filePath: string;
@@ -107,7 +127,28 @@ export interface GenerateDeploymentDiagramInput {
     relationships?: GenerateDeploymentDiagramRelationshipInput[];
 }
 
-export type ProposeDiagramInput = GenerateClassDiagramInput | GenerateDeploymentDiagramInput;
+export interface GenerateActivityDiagramEntityInput {
+    name: string;
+    elementType: ActivityNodeType;
+}
+
+export interface GenerateActivityDiagramRelationshipInput {
+    relationType: ActivityRelationType;
+    sourceName: string;
+    targetName: string;
+    name?: string;
+    guard?: string;
+    weight?: number;
+}
+
+export interface GenerateActivityDiagramInput {
+    filePath: string;
+    diagramType: 'ACTIVITY';
+    entities: GenerateActivityDiagramEntityInput[];
+    relationships?: GenerateActivityDiagramRelationshipInput[];
+}
+
+export type ProposeDiagramInput = GenerateClassDiagramInput | GenerateDeploymentDiagramInput | GenerateActivityDiagramInput;
 
 export type ConfirmGenerationInput = Record<string, never>;
 
