@@ -17,8 +17,6 @@ import { formatProposalSummary } from './proposal-summary.js';
 const MAX_HISTORY_TURNS = 10;
 const INTERVIEW_TOOL_NAMES = [UML_TOOL_NAMES.readUmlFile, UML_TOOL_NAMES.proposeDiagram] as const;
 const CONFIRMATION_TOOL_NAMES = [UML_TOOL_NAMES.readUmlFile, UML_TOOL_NAMES.proposeDiagram, UML_TOOL_NAMES.confirmGeneration] as const;
-const READ_ONLY_TOOL_NAMES = [UML_TOOL_NAMES.readUmlFile] as const;
-const GENERATION_TOOL_NAMES = [UML_TOOL_NAMES.generateClassDiagram, UML_TOOL_NAMES.generateDeploymentDiagram] as const;
 
 @injectable()
 export class InterviewAgentParticipant implements OnActivate, OnDispose {
@@ -112,7 +110,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         token: vscode.CancellationToken
     ): Promise<vscode.ChatResult> {
         const parsedCommand = this.parseCommand(request.prompt);
-        const interviewState = this.deriveInterviewState(context, parsedCommand);
+        const interviewState = this.deriveInterviewState(context, request.prompt, parsedCommand);
         const allowedToolNames = interviewState.awaitingConfirmation ? CONFIRMATION_TOOL_NAMES : INTERVIEW_TOOL_NAMES;
 
         this.outputChannel.appendLine(`[big-ai] Request: ${request.prompt}`);
@@ -173,36 +171,6 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
 
                 if (toolCalls.length === 0) {
                     this.outputChannel.appendLine(`[big-ai] No tool calls in iteration ${iteration + 1}, completing`);
-                    if (requireToolCalls && !generationRetryRequested) {
-                        generationRetryRequested = true;
-                        this.outputChannel.appendLine('[big-ai] Confirmed generation produced no tool call; deriving aggregate input as JSON');
-                        const generatedInput = await this.requestGenerationInput(model, messages, token, interviewState.diagramType);
-                        const toolName =
-                            interviewState.diagramType === 'DEPLOYMENT'
-                                ? UML_TOOL_NAMES.generateDeploymentDiagram
-                                : UML_TOOL_NAMES.generateClassDiagram;
-                        const toolResult = await vscode.lm.invokeTool(
-                            toolName,
-                            {
-                                input: generatedInput as unknown as object,
-                                toolInvocationToken: request.toolInvocationToken
-                            },
-                            token
-                        );
-                        toolUsed = true;
-                        const resultText = this.toolResultText(toolResult);
-                        if (resultText.trim()) {
-                            stream.markdown(resultText);
-                            responseStreamed = true;
-                        }
-                        break;
-                    }
-                    if (requireToolCalls && !responseStreamed) {
-                        this.outputChannel.appendLine('[big-ai] Generation turn produced text instead of tool calls; suppressing model text');
-                        stream.markdown(
-                            '**Error**: Generation was confirmed, but the diagram generator could not derive the generation input.'
-                        );
-                        // TODO
                     // Plain interview turn: the model asked a question or answered. Text already streamed.
                     break;
                 }
@@ -230,8 +198,12 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                         break;
                     }
                     this.outputChannel.appendLine('[big-ai] Generating from stored proposal');
+                    const generationTool =
+                        proposal.diagramType === 'DEPLOYMENT'
+                            ? UML_TOOL_NAMES.generateDeploymentDiagram
+                            : UML_TOOL_NAMES.generateClassDiagram;
                     const toolResult = await vscode.lm.invokeTool(
-                        UML_TOOL_NAMES.generateClassDiagram,
+                        generationTool,
                         {
                             input: proposal as unknown as object,
                             toolInvocationToken: request.toolInvocationToken
@@ -243,7 +215,6 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                         stream.markdown(resultText);
                         responseStreamed = true;
                     }
-                    // TODO
                     generated = true;
                     break;
                 }
@@ -415,10 +386,11 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         return followupsByCommand[commandType] || followupsByCommand['default'];
     }
 
-    protected deriveInterviewState(context: vscode.ChatContext, command: ParsedCommand): InterviewState {
+    protected deriveInterviewState(context: vscode.ChatContext, prompt: string, command: ParsedCommand): InterviewState {
         const pendingProposal = this.findPendingProposal(context);
         const awaitingConfirmation = pendingProposal !== undefined;
         const phase = this.deriveInterviewPhase(context, command, awaitingConfirmation);
+        const diagramType = pendingProposal?.diagramType ?? this.deriveDiagramType(context, prompt, command);
 
         return {
             phase,
@@ -502,23 +474,13 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
     }
 
     protected buildInterviewStateInstruction(context: vscode.ChatContext, interviewState: InterviewState): string {
-            //TODO
         const availableTools = interviewState.awaitingConfirmation
             ? 'readUmlFile, proposeDiagram, confirmGeneration'
             : 'readUmlFile, proposeDiagram';
-        const generationTool =
-            interviewState.diagramType === 'DEPLOYMENT'
-                ? 'biguml-generate-deployment-diagram'
-                : 'biguml-generate-class-diagram';
-        const availableTools = interviewState.confirmed ? `${generationTool} only` : 'readUmlFile only';
 
         const stateRule = interviewState.awaitingConfirmation
             ? 'A complete proposal has already been shown to the user. If the user approves in any wording, call biguml-confirm-generation (no arguments). If the user requests any change, call biguml-propose-diagram again with the corrected specification. Otherwise answer their question or ask one clarifying question. Do not write the summary yourself.'
             : 'No proposal has been shown yet. Continue the interview by asking exactly one clear question, or call biguml-propose-diagram once scope, entities, relationships, details, and the target .uml file are all known. Do not call biguml-confirm-generation. You may offer concrete suggestions, but label them as suggestions the user can accept or change.';
-        const generationRule = interviewState.confirmed
-            ? `The user confirmed a complete prior summary with no missing information. Call ${generationTool} exactly once with the complete confirmed diagram. This tool creates or replaces the target .uml file, then creates nodes, members, and relationships in deterministic order. Do not read the file first. Do not output raw UML.`
-            : 'The user has not confirmed a complete summary. Do not call createUmlFile, addNode, addClassMember, addRelation, removeNode, or removeRelation. Continue the interview by asking exactly one clear, friendly question, or show the required summary only when no information is missing. You may offer concrete suggestions when useful, but label them as suggestions that the user can accept or change.';
-        // TODO
 
         return `## Interview State
 - Phase: ${interviewState.phase}

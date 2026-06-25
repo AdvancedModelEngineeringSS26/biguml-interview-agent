@@ -23,11 +23,13 @@ export function formatProposalSummary(proposal: ProposeDiagramInput): string {
     lines.push('- **Entities:**');
     for (const entity of proposal.entities) {
         const members: string[] = [];
-        for (const property of entity.properties ?? []) {
-            members.push(property.typeName ? `${property.name}: ${property.typeName}` : property.name);
-        }
-        for (const operation of entity.operations ?? []) {
-            members.push(`${operation.name}()`);
+        if ('properties' in entity || 'operations' in entity) {
+            for (const property of entity.properties ?? []) {
+                members.push(property.typeName ? `${property.name}: ${property.typeName}` : property.name);
+            }
+            for (const operation of entity.operations ?? []) {
+                members.push(`${operation.name}()`);
+            }
         }
         const memberText = members.length > 0 ? ` — ${members.join(', ')}` : '';
         lines.push(`  - \`${entity.name}\` (${entity.elementType})${memberText}`);
@@ -37,7 +39,7 @@ export function formatProposalSummary(proposal: ProposeDiagramInput): string {
     if (relationships.length > 0) {
         lines.push('- **Relationships:**');
         for (const relationship of relationships) {
-            const label = relationship.name ? ` (${relationship.name})` : '';
+            const label = 'name' in relationship && relationship.name ? ` (${relationship.name})` : '';
             lines.push(
                 `  - \`${relationship.sourceName}\` → \`${relationship.targetName}\` — ${relationship.relationType}${label}`
             );

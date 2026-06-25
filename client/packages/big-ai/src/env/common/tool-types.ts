@@ -89,10 +89,6 @@ export interface GenerateClassDiagramInput {
     relationships?: GenerateClassDiagramRelationshipInput[];
 }
 
-export type ProposeDiagramInput = GenerateClassDiagramInput;
-
-export type ConfirmGenerationInput = Record<string, never>;
-
 export interface GenerateDeploymentDiagramEntityInput {
     name: string;
     elementType: DeploymentNodeType;
@@ -110,6 +106,10 @@ export interface GenerateDeploymentDiagramInput {
     entities: GenerateDeploymentDiagramEntityInput[];
     relationships?: GenerateDeploymentDiagramRelationshipInput[];
 }
+
+export type ProposeDiagramInput = GenerateClassDiagramInput | GenerateDeploymentDiagramInput;
+
+export type ConfirmGenerationInput = Record<string, never>;
 
 export interface ReadUmlFileInput {
     filePath: string;
@@ -156,4 +156,3 @@ export interface RemoveRelationInput {
     targetName: string;
     relationType?: UmlRelationType;
 }
-
