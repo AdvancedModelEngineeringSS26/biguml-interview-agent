@@ -19,6 +19,25 @@ const READ_ONLY_TOOL_NAMES = [UML_TOOL_NAMES.readUmlFile] as const;
 const GENERATION_TOOL_NAMES = [
     UML_TOOL_NAMES.generateClassDiagram
 ] as const;
+// /modify edits an existing diagram step by step: read it, then add/remove nodes, members and relations.
+const MODIFY_TOOL_NAMES = [
+    UML_TOOL_NAMES.readUmlFile,
+    UML_TOOL_NAMES.createUmlFile,
+    UML_TOOL_NAMES.addNode,
+    UML_TOOL_NAMES.addClassMember,
+    UML_TOOL_NAMES.removeNode,
+    UML_TOOL_NAMES.addRelation,
+    UML_TOOL_NAMES.removeRelation
+] as const;
+// Tools that change a .uml file on disk — after these the open diagram is refreshed so edits are visible.
+const MUTATING_TOOL_NAMES: ReadonlySet<string> = new Set<string>([
+    UML_TOOL_NAMES.createUmlFile,
+    UML_TOOL_NAMES.addNode,
+    UML_TOOL_NAMES.addClassMember,
+    UML_TOOL_NAMES.removeNode,
+    UML_TOOL_NAMES.addRelation,
+    UML_TOOL_NAMES.removeRelation
+]);
 
 @injectable()
 export class InterviewAgentParticipant implements OnActivate, OnDispose {
@@ -117,9 +136,14 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         stream: vscode.ChatResponseStream,
         token: vscode.CancellationToken
     ): Promise<vscode.ChatResult> {
-        const parsedCommand = this.parseCommand(request.prompt);
+        const parsedCommand = this.parseCommand(request);
         const interviewState = this.deriveInterviewState(context, request.prompt, parsedCommand);
-        const allowedToolNames = interviewState.confirmed ? GENERATION_TOOL_NAMES : READ_ONLY_TOOL_NAMES;
+        const isModify = parsedCommand.type === 'modify' && !interviewState.confirmed;
+        const allowedToolNames: readonly string[] = interviewState.confirmed
+            ? GENERATION_TOOL_NAMES
+            : isModify
+                ? MODIFY_TOOL_NAMES
+                : READ_ONLY_TOOL_NAMES;
 
         this.outputChannel.appendLine(`[big-ai] Request: ${request.prompt}`);
         this.outputChannel.appendLine(`[big-ai] Command type: ${parsedCommand.type}`);
@@ -164,12 +188,15 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
             stream.progress('Generating class diagram…');
         }
 
+        let modifiedUri: vscode.Uri | undefined;
+
         try {
             let generationRetryRequested = false;
 
-            const maxGenerationIterations = 3;
-            for (let iteration = 0; iteration < maxGenerationIterations && !token.isCancellationRequested; iteration++) {
-                this.outputChannel.appendLine(`[big-ai] LM request iteration ${iteration + 1}/${maxGenerationIterations}`);
+            // /modify edits the diagram in several steps (create nodes, then relations…), so it needs more rounds.
+            const maxIterations = isModify ? 8 : 3;
+            for (let iteration = 0; iteration < maxIterations && !token.isCancellationRequested; iteration++) {
+                this.outputChannel.appendLine(`[big-ai] LM request iteration ${iteration + 1}/${maxIterations}`);
                 
                 const response = await model.sendRequest(
                     messages,
@@ -229,6 +256,10 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                 this.outputChannel.appendLine(`[big-ai] Tool calls collected: ${toolCalls.length}`);
                 messages.push(vscode.LanguageModelChatMessage.Assistant(toolCalls));
 
+                // All results for one assistant turn's tool_calls must be returned together in a single
+                // tool-result message; pushing them as separate messages makes the LM API reject the next
+                // request ("messages with role 'tool' must be a response to a preceding message with 'tool_calls'").
+                const toolResultParts: vscode.LanguageModelToolResultPart[] = [];
                 for (const toolCall of toolCalls) {
                     try {
                         const toolResult = await vscode.lm.invokeTool(
@@ -240,23 +271,31 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                             token
                         );
                         this.outputChannel.appendLine(`[big-ai] Tool invoked: ${toolCall.name}`);
-                        messages.push(
-                            vscode.LanguageModelChatMessage.User([
-                                new vscode.LanguageModelToolResultPart(toolCall.callId, toolResult.content)
-                            ])
-                        );
+                        toolResultParts.push(new vscode.LanguageModelToolResultPart(toolCall.callId, toolResult.content));
 
                         // The generation tool writes the .uml file but does not surface or open it, so the run
-                        // looks like "nothing happened". Announce the result with a clickable anchor and open the
-                        // diagram so the user sees it.
+                        // looks like "nothing happened". Announce the result with a clickable anchor and open it.
                         if (toolCall.name === UML_TOOL_NAMES.generateClassDiagram) {
                             await this.announceGeneration(stream, this.inputFilePath(toolCall.input), toolResult);
                             responseStreamed = true;
+                        } else if (MUTATING_TOOL_NAMES.has(toolCall.name) && !this.toolResultIsError(toolResult)) {
+                            // Remember the edited file so the open diagram can be refreshed once the batch finishes.
+                            const fp = this.inputFilePath(toolCall.input);
+                            if (fp) {
+                                try {
+                                    modifiedUri = resolveWorkspacePath(fp.toLowerCase().endsWith('.uml') ? fp : `${fp}.uml`);
+                                } catch {
+                                    /* leave modifiedUri unchanged */
+                                }
+                            }
                         }
                     } catch (toolError) {
                         this.outputChannel.appendLine(`[big-ai] Tool error: ${toolError instanceof Error ? toolError.message : String(toolError)}`);
                         throw toolError;
                     }
+                }
+                if (toolResultParts.length > 0) {
+                    messages.push(vscode.LanguageModelChatMessage.User(toolResultParts));
                 }
 
                 // In confirmed/generation mode a single generate call is the whole job. Stop here so the
@@ -270,6 +309,15 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
             if (!responseStreamed) {
                 stream.markdown(`**Error**: ${error instanceof Error ? error.message : 'Unknown error occurred'}`);
             }
+        }
+
+        // After /modify edits, the tools have written the .uml file but the open diagram is stale — anchor the
+        // file and reopen it so the changes are visible.
+        if (modifiedUri) {
+            stream.markdown('\n\n✓ Updated the diagram in ');
+            stream.anchor(modifiedUri);
+            responseStreamed = true;
+            await this.openDiagram(modifiedUri);
         }
 
         this.outputChannel.appendLine(`[big-ai] Response complete (tool_used: ${toolUsed})`);
@@ -362,6 +410,11 @@ Use only confirmed information from the transcript. Include relationships after 
             .join('\n');
     }
 
+    /** A tool result whose text begins with "error" — the convention the UML tools use to report failure. */
+    protected toolResultIsError(toolResult: vscode.LanguageModelToolResult): boolean {
+        return this.toolResultText(toolResult).trimStart().toLowerCase().startsWith('error');
+    }
+
     /** The `filePath` field from a tool input, if present and non-empty. */
     protected inputFilePath(input: unknown): string | undefined {
         if (input && typeof input === 'object' && 'filePath' in input) {
@@ -437,7 +490,16 @@ Use only confirmed information from the transcript. Include relationships after 
         return new Promise(resolve => setTimeout(resolve, ms));
     }
 
-    protected parseCommand(prompt: string): ParsedCommand {
+    protected parseCommand(request: vscode.ChatRequest): ParsedCommand {
+        // VS Code parses a `/command` into request.command and strips it from request.prompt, so this is the
+        // authoritative source. Fall back to scanning the prompt for when a command was typed inline.
+        if (request.command === 'interview' || request.command === 'modify' || request.command === 'explain') {
+            return { type: request.command, argument: request.prompt.trim() };
+        }
+        return this.parseCommandFromPrompt(request.prompt);
+    }
+
+    protected parseCommandFromPrompt(prompt: string): ParsedCommand {
         const interviewMatch = prompt.match(COMMAND_PATTERNS.interview);
         if (interviewMatch) {
             return {
@@ -659,14 +721,23 @@ Use only confirmed information from the transcript. Include relationships after 
         return false;
     }
 
-    protected buildInterviewStateInstruction(context: vscode.ChatContext, interviewState: InterviewState): string {
+    protected buildInterviewStateInstruction(
+        context: vscode.ChatContext,
+        interviewState: InterviewState,
+        command: ParsedCommand
+    ): string {
+        const isModify = command.type === 'modify' && !interviewState.confirmed;
         const availableTools = interviewState.confirmed
             ? 'generateClassDiagram only'
-            : 'readUmlFile only';
+            : isModify
+                ? 'readUmlFile, addNode, addClassMember, removeNode, addRelation, removeRelation, createUmlFile'
+                : 'readUmlFile only';
 
         const generationRule = interviewState.confirmed
             ? 'The user confirmed a complete prior summary with no missing information. Call biguml-generate-class-diagram exactly once with the complete confirmed diagram. This tool creates or replaces the target .uml file, then creates nodes, members, and relationships in deterministic order. Do not read the file first. Do not output raw UML.\nFor filePath: if the user named a target .uml file during the interview, use exactly that path. Otherwise create a NEW descriptive workspace-relative file named after the diagram subject (e.g. "library-system.uml") — do NOT reuse or overwrite the diagram currently open in the editor.'
-            : 'The user has not confirmed a complete summary. Do not call createUmlFile, addNode, addClassMember, addRelation, removeNode, or removeRelation. Continue the interview by asking exactly one clear, friendly question, or show the required summary only when no information is missing. You may offer concrete suggestions when useful, but label them as suggestions that the user can accept or change.';
+            : isModify
+                ? 'The user wants to change an existing class diagram. Apply the change by calling the editing tools — do not just describe it. Pass the active diagram\'s workspace-relative filePath (shown in Context Information) to every edit tool. If you need the current contents, call biguml-read-uml-file first. Use addNode/addClassMember to add classes and members, removeNode/removeRelation to delete, and addRelation for associations; create all new nodes before relating them. You may batch several independent edits in one turn. Afterwards, briefly state in plain UML terms what you changed (the applied edits are surfaced to the user automatically).'
+                : 'The user has not confirmed a complete summary. Do not call createUmlFile, addNode, addClassMember, addRelation, removeNode, or removeRelation. Continue the interview by asking exactly one clear, friendly question, or show the required summary only when no information is missing. You may offer concrete suggestions when useful, but label them as suggestions that the user can accept or change.';
 
         return `## Interview State
 - Phase: ${interviewState.phase}
@@ -754,7 +825,7 @@ ${modeContext}
 
 ---
 
-${this.buildInterviewStateInstruction(context, interviewState)}
+${this.buildInterviewStateInstruction(context, interviewState, command)}
 
 ---
 
