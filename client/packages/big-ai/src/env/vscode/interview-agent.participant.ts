@@ -11,12 +11,15 @@ import type { OnActivate, OnDispose } from '@borkdominik-biguml/big-vscode/vscod
 import { injectable } from 'inversify';
 import * as vscode from 'vscode';
 import { AI_PARTICIPANT_ID, UML_TOOL_NAMES, COMMAND_PATTERNS, SYSTEM_PROMPT } from '../common/index.js';
-import type { GenerateClassDiagramInput, InterviewPhase, InterviewState, ParsedCommand } from '../common/tool-types.js';
+import type { InterviewPhase, InterviewState, ParsedCommand, ProposeDiagramInput } from '../common/tool-types.js';
+import { formatProposalSummary } from './proposal-summary.js';
 
 const MAX_HISTORY_TURNS = 10;
-const READ_ONLY_TOOL_NAMES = [UML_TOOL_NAMES.readUmlFile] as const;
-const GENERATION_TOOL_NAMES = [
-    UML_TOOL_NAMES.generateClassDiagram
+const INTERVIEW_TOOL_NAMES = [UML_TOOL_NAMES.readUmlFile, UML_TOOL_NAMES.proposeDiagram] as const;
+const CONFIRMATION_TOOL_NAMES = [
+    UML_TOOL_NAMES.readUmlFile,
+    UML_TOOL_NAMES.proposeDiagram,
+    UML_TOOL_NAMES.confirmGeneration
 ] as const;
 
 @injectable()
@@ -117,13 +120,13 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         token: vscode.CancellationToken
     ): Promise<vscode.ChatResult> {
         const parsedCommand = this.parseCommand(request.prompt);
-        const interviewState = this.deriveInterviewState(context, request.prompt, parsedCommand);
-        const allowedToolNames = interviewState.confirmed ? GENERATION_TOOL_NAMES : READ_ONLY_TOOL_NAMES;
+        const interviewState = this.deriveInterviewState(context, parsedCommand);
+        const allowedToolNames = interviewState.awaitingConfirmation ? CONFIRMATION_TOOL_NAMES : INTERVIEW_TOOL_NAMES;
 
         this.outputChannel.appendLine(`[big-ai] Request: ${request.prompt}`);
         this.outputChannel.appendLine(`[big-ai] Command type: ${parsedCommand.type}`);
         this.outputChannel.appendLine(`[big-ai] Interview phase: ${interviewState.phase}`);
-        this.outputChannel.appendLine(`[big-ai] Generation confirmed: ${interviewState.confirmed}`);
+        this.outputChannel.appendLine(`[big-ai] Awaiting confirmation: ${interviewState.awaitingConfirmation}`);
         this.outputChannel.appendLine(`[big-ai] Conversation turn: ${context.history.length + 1}`);
 
         const [model] = await vscode.lm.selectChatModels({ vendor: 'copilot' });
@@ -138,26 +141,22 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
             };
         }
 
-        const historyMessages = this.buildHistoryMessages(context);
-
         const messages: vscode.LanguageModelChatMessage[] = [
             vscode.LanguageModelChatMessage.User(this.buildSystemMessage(request, context, parsedCommand, interviewState)),
-            ...historyMessages,
+            ...this.buildHistoryMessages(context),
             vscode.LanguageModelChatMessage.User(this.buildUserMessage(request, parsedCommand))
         ];
 
         let toolUsed = false;
         let responseStreamed = false;
-        let streamedText = '';
-        const requireToolCalls = interviewState.confirmed;
+        let presentedProposal: ProposeDiagramInput | undefined;
+        let generated = false;
 
         try {
-            let generationRetryRequested = false;
+            const maxIterations = 5;
+            for (let iteration = 0; iteration < maxIterations && !token.isCancellationRequested; iteration++) {
+                this.outputChannel.appendLine(`[big-ai] LM request iteration ${iteration + 1}/${maxIterations}`);
 
-            const maxGenerationIterations = 3;
-            for (let iteration = 0; iteration < maxGenerationIterations && !token.isCancellationRequested; iteration++) {
-                this.outputChannel.appendLine(`[big-ai] LM request iteration ${iteration + 1}/${maxGenerationIterations}`);
-                
                 const response = await model.sendRequest(
                     messages,
                     {
@@ -167,78 +166,81 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                 );
 
                 const toolCalls: vscode.LanguageModelToolCallPart[] = [];
-
                 for await (const part of response.stream) {
                     if (part instanceof vscode.LanguageModelTextPart) {
-                        if (!requireToolCalls) {
-                            stream.markdown(part.value);
-                            streamedText += part.value;
-                            responseStreamed = true;
-                        }
+                        stream.markdown(part.value);
+                        responseStreamed = true;
                         continue;
                     }
-
                     if (part instanceof vscode.LanguageModelToolCallPart) {
                         toolCalls.push(part);
                     }
                 }
 
                 if (toolCalls.length === 0) {
-                    this.outputChannel.appendLine(`[big-ai] No tool calls in iteration ${iteration + 1}, completing`);
-                    if (requireToolCalls && !generationRetryRequested) {
-                        generationRetryRequested = true;
-                        this.outputChannel.appendLine('[big-ai] Confirmed generation produced no tool call; deriving aggregate input as JSON');
-                        const generatedInput = await this.requestGenerationInput(model, messages, token);
-                        const toolResult = await vscode.lm.invokeTool(
-                            UML_TOOL_NAMES.generateClassDiagram,
-                            {
-                                input: generatedInput as unknown as object,
-                                toolInvocationToken: request.toolInvocationToken
-                            },
-                            token
-                        );
-                        toolUsed = true;
-                        const resultText = this.toolResultText(toolResult);
-                        if (resultText.trim()) {
-                            stream.markdown(resultText);
-                            responseStreamed = true;
-                        }
-                        break;
-                    }
-                    if (requireToolCalls && !responseStreamed) {
-                        this.outputChannel.appendLine('[big-ai] Generation turn produced text instead of tool calls; suppressing model text');
-                        stream.markdown(
-                            '**Error**: Generation was confirmed, but the diagram generator could not derive the generation input.'
-                        );
-                        responseStreamed = true;
-                    }
+                    // Plain interview turn: the model asked a question or answered. Text already streamed.
                     break;
                 }
 
+                // Arm: the model proposes a diagram. Render the summary deterministically and stop.
+                const proposeCall = toolCalls.find(call => call.name === UML_TOOL_NAMES.proposeDiagram);
+                if (proposeCall) {
+                    toolUsed = true;
+                    presentedProposal = proposeCall.input as ProposeDiagramInput;
+                    this.outputChannel.appendLine('[big-ai] Proposal received; rendering summary and arming gate');
+                    stream.markdown(formatProposalSummary(presentedProposal));
+                    responseStreamed = true;
+                    break;
+                }
+
+                // Fire: the model confirms. Generate from the stored proposal and stop.
+                const confirmCall = toolCalls.find(call => call.name === UML_TOOL_NAMES.confirmGeneration);
+                if (confirmCall) {
+                    toolUsed = true;
+                    const proposal = interviewState.pendingProposal;
+                    if (!proposal) {
+                        this.outputChannel.appendLine('[big-ai] Confirm called without a pending proposal');
+                        stream.markdown('**Error**: No diagram proposal is pending. Please describe the diagram so I can propose it first.');
+                        responseStreamed = true;
+                        break;
+                    }
+                    this.outputChannel.appendLine('[big-ai] Generating from stored proposal');
+                    const toolResult = await vscode.lm.invokeTool(
+                        UML_TOOL_NAMES.generateClassDiagram,
+                        {
+                            input: proposal as unknown as object,
+                            toolInvocationToken: request.toolInvocationToken
+                        },
+                        token
+                    );
+                    const resultText = this.toolResultText(toolResult);
+                    if (resultText.trim()) {
+                        stream.markdown(resultText);
+                        responseStreamed = true;
+                    }
+                    generated = true;
+                    break;
+                }
+
+                // Otherwise (e.g. read-uml-file): invoke and feed results back so the model can continue.
                 toolUsed = true;
                 this.outputChannel.appendLine(`[big-ai] Tool calls collected: ${toolCalls.length}`);
                 messages.push(vscode.LanguageModelChatMessage.Assistant(toolCalls));
-
                 for (const toolCall of toolCalls) {
-                    try {
-                        const toolResult = await vscode.lm.invokeTool(
-                            toolCall.name,
-                            {
-                                input: toolCall.input as object,
-                                toolInvocationToken: request.toolInvocationToken
-                            },
-                            token
-                        );
-                        this.outputChannel.appendLine(`[big-ai] Tool invoked: ${toolCall.name}`);
-                        messages.push(
-                            vscode.LanguageModelChatMessage.User([
-                                new vscode.LanguageModelToolResultPart(toolCall.callId, toolResult.content)
-                            ])
-                        );
-                    } catch (toolError) {
-                        this.outputChannel.appendLine(`[big-ai] Tool error: ${toolError instanceof Error ? toolError.message : String(toolError)}`);
-                        throw toolError;
-                    }
+                    const toolResult = await vscode.lm.invokeTool(
+                        toolCall.name,
+                        {
+                            input: toolCall.input as object,
+                            toolInvocationToken: request.toolInvocationToken
+                        },
+                        token
+                    );
+                    this.outputChannel.appendLine(`[big-ai] Tool invoked: ${toolCall.name}`);
+                    messages.push(
+                        vscode.LanguageModelChatMessage.User([
+                            new vscode.LanguageModelToolResultPart(toolCall.callId, toolResult.content)
+                        ])
+                    );
                 }
             }
         } catch (error) {
@@ -248,7 +250,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
             }
         }
 
-        this.outputChannel.appendLine(`[big-ai] Response complete (tool_used: ${toolUsed})`);
+        this.outputChannel.appendLine(`[big-ai] Response complete (tool_used: ${toolUsed}, armed: ${presentedProposal !== undefined}, generated: ${generated})`);
 
         return {
             metadata: {
@@ -257,78 +259,11 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                 responseStreamed,
                 commandArgument: parsedCommand.argument || '',
                 interviewPhase: interviewState.phase,
-                awaitingConfirmation: interviewState.awaitingConfirmation,
-                generationConfirmed: interviewState.confirmed,
-                presentedSummary: this.looksLikeGenerationSummary(streamedText)
+                awaitingConfirmation: presentedProposal !== undefined,
+                proposal: presentedProposal,
+                generated
             }
         };
-    }
-
-    protected async requestGenerationInput(
-        model: vscode.LanguageModelChat,
-        messages: vscode.LanguageModelChatMessage[],
-        token: vscode.CancellationToken
-    ): Promise<GenerateClassDiagramInput> {
-        const extractionMessages = [
-            ...messages,
-            vscode.LanguageModelChatMessage.User(`Return only the JSON input for biguml-generate-class-diagram. Do not call tools and do not include markdown.
-The JSON shape is:
-{
-  "filePath": "workspace-relative-target.uml",
-  "diagramType": "CLASS",
-  "entities": [
-    {
-      "name": "ClassName",
-      "elementType": "Class | AbstractClass | Interface | Enumeration | Package | DataType | PrimitiveType",
-      "properties": [{ "name": "propertyName", "typeName": "TypeName", "visibility": "PUBLIC | PRIVATE | PROTECTED | PACKAGE", "multiplicity": "optional" }],
-      "operations": [{ "name": "operationName", "visibility": "PUBLIC | PRIVATE | PROTECTED | PACKAGE" }]
-    }
-  ],
-  "relationships": [
-    {
-      "relationType": "Association | Aggregation | Composition | Generalization | Dependency | InterfaceRealization | Realization | Abstraction | Usage",
-      "sourceName": "SourceClass",
-      "targetName": "TargetClass",
-      "name": "optional relation label",
-      "sourceMultiplicity": "optional",
-      "targetMultiplicity": "optional"
-    }
-  ]
-}
-Use only confirmed information from the transcript. Include relationships after all entities. If operations have return types in the transcript, keep only the operation names because the current tool schema has no operation return type field.`)
-        ];
-
-        const response = await model.sendRequest(extractionMessages, {}, token);
-        let text = '';
-        for await (const part of response.stream) {
-            if (part instanceof vscode.LanguageModelTextPart) {
-                text += part.value;
-            }
-        }
-
-        const parsed = this.parseJsonObject(text);
-        return parsed as GenerateClassDiagramInput;
-    }
-
-    protected parseJsonObject(text: string): unknown {
-        const trimmed = text.trim();
-        if (!trimmed) {
-            throw new Error('The language model returned no generation input.');
-        }
-
-        const fencedMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
-        const candidate = fencedMatch?.[1]?.trim() ?? trimmed;
-        const start = candidate.indexOf('{');
-        const end = candidate.lastIndexOf('}');
-        if (start < 0 || end < start) {
-            throw new Error('The language model did not return JSON generation input.');
-        }
-
-        try {
-            return JSON.parse(candidate.slice(start, end + 1));
-        } catch (error) {
-            throw new Error(`Invalid JSON generation input: ${error instanceof Error ? error.message : String(error)}`);
-        }
     }
 
     protected toolResultText(toolResult: vscode.LanguageModelToolResult): string {
@@ -454,10 +389,10 @@ Use only confirmed information from the transcript. Include relationships after 
         return followupsByCommand[commandType] || followupsByCommand['default'];
     }
 
-    protected deriveInterviewState(context: vscode.ChatContext, prompt: string, command: ParsedCommand): InterviewState {
-        const confirmed = this.isConfirmationTurn(context, prompt);
-        const awaitingConfirmation = this.previousAssistantRequestedGeneration(context);
-        const phase = this.deriveInterviewPhase(context, command, awaitingConfirmation, confirmed);
+    protected deriveInterviewState(context: vscode.ChatContext, command: ParsedCommand): InterviewState {
+        const pendingProposal = this.findPendingProposal(context);
+        const awaitingConfirmation = pendingProposal !== undefined;
+        const phase = this.deriveInterviewPhase(context, command, awaitingConfirmation);
 
         return {
             phase,
@@ -466,20 +401,36 @@ Use only confirmed information from the transcript. Include relationships after 
             relationships: [],
             details: [],
             awaitingConfirmation,
-            confirmed
+            pendingProposal
         };
+    }
+
+    protected findPendingProposal(context: vscode.ChatContext): ProposeDiagramInput | undefined {
+        const recentHistory = context.history.slice(-MAX_HISTORY_TURNS);
+        for (const turn of [...recentHistory].reverse()) {
+            if (!(turn instanceof vscode.ChatResponseTurn)) {
+                continue;
+            }
+            const metadata = turn.result?.metadata;
+            if (!metadata) {
+                continue;
+            }
+            // The most recent decision wins: a generation disarms; a proposal arms.
+            if (metadata.generated === true) {
+                return undefined;
+            }
+            if (metadata.proposal) {
+                return metadata.proposal as ProposeDiagramInput;
+            }
+        }
+        return undefined;
     }
 
     protected deriveInterviewPhase(
         context: vscode.ChatContext,
         command: ParsedCommand,
-        awaitingConfirmation: boolean,
-        confirmed: boolean
+        awaitingConfirmation: boolean
     ): InterviewPhase {
-        if (confirmed) {
-            return 'generation';
-        }
-
         if (awaitingConfirmation) {
             return 'confirmation';
         }
@@ -491,73 +442,22 @@ Use only confirmed information from the transcript. Include relationships after 
         return 'details';
     }
 
-    protected isConfirmationTurn(context: vscode.ChatContext, prompt: string): boolean {
-        if (!this.previousAssistantRequestedGeneration(context)) {
-            return false;
-        }
-
-        return /\b(generate|create|confirm|confirmed|yes|yep|looks good|go ahead|proceed)\b/i.test(prompt);
-    }
-
-    protected looksLikeGenerationSummary(text: string): boolean {
-        if (!text) {
-            return false;
-        }
-
-        const hasSummary = /\bsummary\b/i.test(text) || /^\s*-?\s*diagram file:/im.test(text);
-        const invitesGeneration =
-            /reply\b[\s\S]*?\bgenerate\b/i.test(text) ||
-            /\bgenerate\b[\s\S]*?\b(diagram|to create)\b/i.test(text);
-        const noMissingInfo =
-            /missing info(?:rmation)?:?\s*(none|no\b)/i.test(text) ||
-            /\b(nothing|no info\w*)\s+(?:is\s+)?missing\b/i.test(text);
-
-        return hasSummary && invitesGeneration && noMissingInfo;
-    }
-
-    protected previousAssistantRequestedGeneration(context: vscode.ChatContext): boolean {
-        const recentHistory = context.history.slice(-MAX_HISTORY_TURNS);
-
-        for (const turn of [...recentHistory].reverse()) {
-            if (!(turn instanceof vscode.ChatResponseTurn)) {
-                continue;
-            }
-
-            const recorded = turn.result?.metadata?.presentedSummary;
-            if (recorded === true) {
-                return true;
-            }
-            if (recorded === false) {
-                // The agent's own non-summary / error turn — skip so it cannot poison the gate.
-                continue;
-            }
-
-            // Turn predates the recorded flag (or was restored after a reload): use the text heuristic.
-            if (this.looksLikeGenerationSummary(this.responseTurnText(turn))) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
     protected buildInterviewStateInstruction(context: vscode.ChatContext, interviewState: InterviewState): string {
-        const availableTools = interviewState.confirmed
-            ? 'generateClassDiagram only'
-            : 'readUmlFile only';
+        const availableTools = interviewState.awaitingConfirmation
+            ? 'readUmlFile, proposeDiagram, confirmGeneration'
+            : 'readUmlFile, proposeDiagram';
 
-        const generationRule = interviewState.confirmed
-            ? 'The user confirmed a complete prior summary with no missing information. Call biguml-generate-class-diagram exactly once with the complete confirmed diagram. This tool creates or replaces the target .uml file, then creates nodes, members, and relationships in deterministic order. Do not read the file first. Do not output raw UML.'
-            : 'The user has not confirmed a complete summary. Do not call createUmlFile, addNode, addClassMember, addRelation, removeNode, or removeRelation. Continue the interview by asking exactly one clear, friendly question, or show the required summary only when no information is missing. You may offer concrete suggestions when useful, but label them as suggestions that the user can accept or change.';
+        const stateRule = interviewState.awaitingConfirmation
+            ? 'A complete proposal has already been shown to the user. If the user approves in any wording, call biguml-confirm-generation (no arguments). If the user requests any change, call biguml-propose-diagram again with the corrected specification. Otherwise answer their question or ask one clarifying question. Do not write the summary yourself.'
+            : 'No proposal has been shown yet. Continue the interview by asking exactly one clear question, or call biguml-propose-diagram once scope, entities, relationships, details, and the target .uml file are all known. Do not call biguml-confirm-generation. You may offer concrete suggestions, but label them as suggestions the user can accept or change.';
 
         return `## Interview State
 - Phase: ${interviewState.phase}
 - Diagram type: CLASS
 - Awaiting confirmation: ${interviewState.awaitingConfirmation}
-- Confirmed for generation: ${interviewState.confirmed}
 - Tools available this turn: ${availableTools}
 
-${generationRule}
+${stateRule}
 
 ## Chat History Transcript
 Use this transcript as the source of truth for requirements. Do not invent missing requirements.
@@ -580,9 +480,9 @@ ${this.buildInterviewTranscript(context)}`;
                         1. Gather class diagram requirements in this order: scope, entities, relationships, details, confirmation.
                         2. Ask exactly one clarifying question per assistant response when information is missing.
                         3. Avoid compound prompts such as multiple bullet questions, "for example" question lists, or several alternatives that all need answers.
-                        4. Show the required summary before generation.
-                        5. Generate only after explicit confirmation of a previous summary.
-                        6. Use registered tools only for generation.`,
+                        4. When scope, entities, relationships, details, and the target .uml file are all known, call biguml-propose-diagram with the complete specification. Do not hand-write the summary; the tool renders it.
+                        5. After a proposal is shown, call biguml-confirm-generation when the user approves in any wording, or call biguml-propose-diagram again if they request changes.
+                        6. Generate only through these tools; never write raw UML, JSON, or a summary yourself.`,
 
             modify: `## Modification Mode Activation
                         You are in MODIFY mode. Your goals:
