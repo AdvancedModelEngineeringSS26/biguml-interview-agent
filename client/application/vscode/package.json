@@ -486,9 +486,112 @@
         }
       },
       {
+        "name": "biguml-generate-activity-diagram",
+        "displayName": "Generate UML Activity Diagram",
+        "modelDescription": "Generates a complete UML activity diagram in deterministic order. Use this after /interview confirmation instead of calling create/add-node/add-relation separately.",
+        "canBeReferencedInPrompt": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "filePath": {
+              "type": "string",
+              "description": "Workspace-relative path for the generated .uml file"
+            },
+            "diagramType": {
+              "type": "string",
+              "enum": [
+                "ACTIVITY"
+              ],
+              "description": "The type of UML diagram to generate"
+            },
+            "entities": {
+              "type": "array",
+              "description": "All confirmed activity diagram nodes.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "Node name"
+                  },
+                  "elementType": {
+                    "type": "string",
+                    "enum": [
+                      "Activity",
+                      "ActivityPartition",
+                      "OpaqueAction",
+                      "AcceptEventAction",
+                      "SendSignalAction",
+                      "InitialNode",
+                      "DecisionNode",
+                      "MergeNode",
+                      "JoinNode",
+                      "ForkNode",
+                      "ActivityFinalNode",
+                      "FlowFinalNode",
+                      "CentralBufferNode",
+                      "ActivityParameterNode",
+                      "InputPin",
+                      "OutputPin"
+                    ],
+                    "description": "UML activity element type"
+                  }
+                },
+                "required": [
+                  "name",
+                  "elementType"
+                ]
+              }
+            },
+            "relationships": {
+              "type": "array",
+              "description": "All confirmed control flows between activity nodes.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "relationType": {
+                    "type": "string",
+                    "enum": [
+                      "ControlFlow"
+                    ]
+                  },
+                  "sourceName": {
+                    "type": "string"
+                  },
+                  "targetName": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "guard": {
+                    "type": "string",
+                    "description": "Optional guard for decision outcomes"
+                  },
+                  "weight": {
+                    "type": "number",
+                    "description": "Optional non-negative integer flow weight"
+                  }
+                },
+                "required": [
+                  "relationType",
+                  "sourceName",
+                  "targetName"
+                ]
+              }
+            }
+          },
+          "required": [
+            "filePath",
+            "diagramType",
+            "entities"
+          ]
+        }
+      },
+      {
         "name": "biguml-propose-diagram",
         "displayName": "Propose UML Diagram",
-        "modelDescription": "Presents the complete proposed class diagram to the user for confirmation. Call this once every requirement (scope, entities, relationships, details, target .uml file) is known. The extension renders the summary from this input — do not write the summary yourself. This does not modify any file.",
+        "modelDescription": "Presents the complete proposed class, deployment, or activity diagram to the user for confirmation. Call this once every requirement (scope, entities, relationships, details, target .uml file) is known. The extension renders the summary from this input — do not write the summary yourself. This does not modify any file.",
         "canBeReferencedInPrompt": false,
         "inputSchema": {
           "type": "object",
@@ -500,13 +603,15 @@
             "diagramType": {
               "type": "string",
               "enum": [
-                "CLASS"
+                "CLASS",
+                "DEPLOYMENT",
+                "ACTIVITY"
               ],
               "description": "The type of UML diagram to generate"
             },
             "entities": {
               "type": "array",
-              "description": "All confirmed class diagram entities. Include properties and operations under their owning entity.",
+              "description": "All confirmed diagram entities. For class diagrams include properties and operations under their owning entity. For deployment and activity diagrams include the confirmed nodes.",
               "items": {
                 "type": "object",
                 "properties": {
@@ -523,7 +628,30 @@
                       "Enumeration",
                       "Package",
                       "DataType",
-                      "PrimitiveType"
+                      "PrimitiveType",
+                      "Artifact",
+                      "Device",
+                      "ExecutionEnvironment",
+                      "DeploymentNode",
+                      "DeploymentSpecification",
+                      "DeploymentPackage",
+                      "DeploymentModel",
+                      "Activity",
+                      "ActivityPartition",
+                      "OpaqueAction",
+                      "AcceptEventAction",
+                      "SendSignalAction",
+                      "InitialNode",
+                      "DecisionNode",
+                      "MergeNode",
+                      "JoinNode",
+                      "ForkNode",
+                      "ActivityFinalNode",
+                      "FlowFinalNode",
+                      "CentralBufferNode",
+                      "ActivityParameterNode",
+                      "InputPin",
+                      "OutputPin"
                     ],
                     "description": "UML element type"
                   },
@@ -608,7 +736,11 @@
                       "PackageMerge",
                       "Realization",
                       "Substitution",
-                      "Usage"
+                      "Usage",
+                      "CommunicationPath",
+                      "Deployment",
+                      "Manifestation",
+                      "ControlFlow"
                     ]
                   },
                   "sourceName": {
@@ -625,6 +757,12 @@
                   },
                   "targetMultiplicity": {
                     "type": "string"
+                  },
+                  "guard": {
+                    "type": "string"
+                  },
+                  "weight": {
+                    "type": "number"
                   }
                 },
                 "required": [

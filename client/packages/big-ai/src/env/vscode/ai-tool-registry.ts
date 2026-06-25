@@ -18,6 +18,7 @@ import {
     ConfirmGenerationTool,
     CreateUmlFileTool,
     DummyTool,
+    GenerateActivityDiagramTool,
     GenerateClassDiagramTool,
     ProposeDiagramTool,
     GenerateDeploymentDiagramTool,
@@ -33,6 +34,7 @@ export class AiToolRegistry implements OnActivate, OnDispose {
     constructor(
         @inject(DummyTool) protected readonly dummyTool: DummyTool,
         @inject(GenerateClassDiagramTool) protected readonly generateClassDiagramTool: GenerateClassDiagramTool,
+        @inject(GenerateActivityDiagramTool) protected readonly generateActivityDiagramTool: GenerateActivityDiagramTool,
         @inject(GenerateDeploymentDiagramTool) protected readonly generateDeploymentDiagramTool: GenerateDeploymentDiagramTool,
         @inject(ProposeDiagramTool) protected readonly proposeDiagramTool: ProposeDiagramTool,
         @inject(ConfirmGenerationTool) protected readonly confirmGenerationTool: ConfirmGenerationTool,
@@ -53,6 +55,7 @@ export class AiToolRegistry implements OnActivate, OnDispose {
         this.toDispose.push(
             vscode.lm.registerTool(UML_TOOL_NAMES.dummy, this.dummyTool),
             vscode.lm.registerTool(UML_TOOL_NAMES.generateClassDiagram, this.generateClassDiagramTool),
+            vscode.lm.registerTool(UML_TOOL_NAMES.generateActivityDiagram, this.generateActivityDiagramTool),
             vscode.lm.registerTool(UML_TOOL_NAMES.proposeDiagram, this.proposeDiagramTool),
             vscode.lm.registerTool(UML_TOOL_NAMES.confirmGeneration, this.confirmGenerationTool),
             vscode.lm.registerTool(UML_TOOL_NAMES.generateDeploymentDiagram, this.generateDeploymentDiagramTool),

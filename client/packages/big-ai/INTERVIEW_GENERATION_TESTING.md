@@ -109,6 +109,52 @@ Expected behavior:
 - The summary should correctly identify the diagram type as `DEPLOYMENT`.
 - After confirmation, it should call `biguml-generate-deployment-diagram`.
 
+### Activity Diagram
+
+Try:
+
+```text
+@biguml /interview Create an activity diagram for order fulfillment.
+```
+
+Expected behavior:
+
+- The agent asks clarifying questions about actions, control flow, decisions, start/end states, parallel branches, and swimlanes where applicable.
+- The summary should correctly identify the diagram type as `ACTIVITY`.
+- After confirmation, it should call `biguml-generate-activity-diagram`.
+
+One complete regression path:
+
+```text
+@biguml /interview Create an activity diagram for order fulfillment.
+```
+
+```text
+The flow starts, receives an order, validates payment, then decides if payment is valid.
+If payment is invalid, reject the order and end. If valid, fork into packing the order and notifying the customer, then join, ship the order, and finish.
+```
+
+```text
+Use workspace/order_fulfillment_activity.uml.
+```
+
+Expected proposal contents:
+
+- Diagram type: `ACTIVITY`
+- Entities include `InitialNode`, `OpaqueAction` nodes for receive/validate/reject/pack/notify/ship, `DecisionNode`, `ForkNode`, `JoinNode`, and `ActivityFinalNode`.
+- Relationships are `ControlFlow`, with guards such as `valid` and `invalid` on the decision outcomes.
+
+Confirm with:
+
+```text
+generate
+```
+
+Expected behavior:
+
+- `workspace/order_fulfillment_activity.uml` is written.
+- The file parses as a UML activity diagram.
+
 ### Unsupported Diagram Type
 
 Try:
@@ -119,7 +165,7 @@ Try:
 
 Expected behavior:
 
-- The agent explains that AI-assisted generation currently supports UML class and deployment diagrams only.
+- The agent explains that AI-assisted generation currently supports UML class, deployment, and activity diagrams only.
 
 ### Hallucination Pressure
 
