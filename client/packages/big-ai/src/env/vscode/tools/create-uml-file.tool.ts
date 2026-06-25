@@ -11,18 +11,12 @@ import { OutputChannel } from '@borkdominik-biguml/big-vscode/vscode';
 import { inject, injectable } from 'inversify';
 import * as vscode from 'vscode';
 import type { CreateUmlFileInput } from '../../common/index.js';
-import { confirmationFor, createToolResult, resolveWorkspacePath, validateRequiredString } from './tool-utils.js';
+import { createToolResult, resolveWorkspacePath, validateRequiredString } from './tool-utils.js';
+import { emptyUmlDiagramFile, stringifyUmlDiagramFile } from './uml-file-format.js';
 
 @injectable()
 export class CreateUmlFileTool implements vscode.LanguageModelTool<CreateUmlFileInput> {
     constructor(@inject(OutputChannel) protected readonly outputChannel: OutputChannel) {}
-
-    prepareInvocation(
-        options: vscode.LanguageModelToolInvocationPrepareOptions<CreateUmlFileInput>
-    ): vscode.PreparedToolInvocation {
-        const file = options.input.filePath.split(/[\\/]/).pop() ?? 'file';
-        return { invocationMessage: `Creating UML file ${file}`, ...confirmationFor(`Create a new UML file at ${file}?`) };
-    }
 
     async invoke(
         options: vscode.LanguageModelToolInvocationOptions<CreateUmlFileInput>,
@@ -52,23 +46,10 @@ export class CreateUmlFileTool implements vscode.LanguageModelTool<CreateUmlFile
             // File does not exist — proceed
         }
 
-        const content = JSON.stringify(emptyDiagram(), null, '\t');
+        const content = stringifyUmlDiagramFile(emptyUmlDiagramFile());
         await vscode.workspace.fs.writeFile(uri, Buffer.from(content, 'utf-8'));
 
         this.outputChannel.appendLine(`[big-ai] Created UML file: ${uri.fsPath}`);
         return createToolResult(`Created UML file at ${uri.fsPath}`);
     }
-}
-
-function emptyDiagram() {
-    return {
-        diagram: {
-            __type: 'ClassDiagram',
-            __id: 'ClassDiagram1',
-            diagramType: 'CLASS',
-            entities: [],
-            relations: []
-        },
-        metaInfos: []
-    };
 }

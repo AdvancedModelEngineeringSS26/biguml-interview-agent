@@ -7,6 +7,7 @@
  * SPDX-License-Identifier: MIT
  *********************************************************************************/
 
+import { randomUUID } from 'crypto';
 import * as path from 'path';
 import * as vscode from 'vscode';
 
@@ -14,14 +15,41 @@ export function createToolResult(message: string): vscode.LanguageModelToolResul
     return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(message)]);
 }
 
+/** Generates a UML model element id (a leading letter is required by the grammar). */
+export function generateId(): string {
+    const uuid = randomUUID();
+    return `a${uuid.substring(1)}`;
+}
+
+/** Builds a serialized reference to another model element by id. */
+export function ref(nodeId: string, refType = 'Node'): { __type: 'Reference'; __refType: string; __value: string } {
+    return { __type: 'Reference', __refType: refType, __value: nodeId };
+}
+
 /**
- * Returns the `confirmationMessages` portion of a PreparedToolInvocation when the
- * `bigUML.ai.confirmBeforeApply` setting is enabled, so the user is asked to confirm (Continue/Cancel)
- * before a mutating tool runs. Returns an empty object when confirmation is disabled.
+ * Normalizes a user-supplied multiplicity into a parser-safe token, or `undefined`
+ * when it cannot be represented. Bare identifiers and `*` pass through unchanged.
  */
-export function confirmationFor(message: string): Pick<vscode.PreparedToolInvocation, 'confirmationMessages'> {
-    const enabled = vscode.workspace.getConfiguration('bigUML.ai').get<boolean>('confirmBeforeApply', true);
-    return enabled ? { confirmationMessages: { title: 'Apply change to UML diagram?', message } } : {};
+export function toParserSafeMultiplicity(value: string): string | undefined {
+    const trimmed = value.trim();
+    if (trimmed === '*') {
+        return trimmed;
+    }
+    if (/^[a-zA-Z_][\w-]*$/.test(trimmed)) {
+        return trimmed;
+    }
+    switch (trimmed) {
+        case '1':
+            return 'one';
+        case '0..1':
+            return 'zeroToOne';
+        case '0..*':
+            return '*';
+        case '1..*':
+            return 'oneToMany';
+        default:
+            return undefined;
+    }
 }
 
 export function resolveWorkspacePath(filePath: string, options: { requireUmlExtension?: boolean } = {}): vscode.Uri {

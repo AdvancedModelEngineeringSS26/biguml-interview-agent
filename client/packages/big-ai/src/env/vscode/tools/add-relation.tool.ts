@@ -8,11 +8,12 @@
  *********************************************************************************/
 
 import { OutputChannel } from '@borkdominik-biguml/big-vscode/vscode';
-import { randomUUID } from 'crypto';
 import { inject, injectable } from 'inversify';
 import * as vscode from 'vscode';
 import type { AddRelationInput, UmlRelationType } from '../../common/index.js';
-import { confirmationFor, createToolResult, resolveWorkspacePath, validateRequiredString, validateUmlDiagramFile } from './tool-utils.js';
+import { buildRelationRecord, NAMED_RELATION_TYPES } from './relation-serialization.js';
+import { createToolResult, resolveWorkspacePath, validateRequiredString, validateUmlDiagramFile } from './tool-utils.js';
+import { stringifyUmlDiagramFile } from './uml-file-format.js';
 
 // Maps UmlRelationType to the GLSP element type ID used in CreateEdgeOperation
 const GLSP_EDGE_TYPE_ID: Record<UmlRelationType, string> = {
@@ -29,29 +30,6 @@ const GLSP_EDGE_TYPE_ID: Record<UmlRelationType, string> = {
     Substitution: 'class__Substitution',
     Usage: 'class__Usage'
 };
-
-// Maps UmlRelationType to the relationType field stored in the JSON file
-const RELATION_TYPE_MAP: Record<UmlRelationType, string> = {
-    Association: 'ASSOCIATION',
-    Aggregation: 'AGGREGATION',
-    Composition: 'COMPOSITION',
-    Abstraction: 'ABSTRACTION',
-    Dependency: 'DEPENDENCY',
-    Generalization: 'GENERALIZATION',
-    InterfaceRealization: 'INTERFACE_REALIZATION',
-    PackageImport: 'PACKAGE_IMPORT',
-    PackageMerge: 'PACKAGE_MERGE',
-    Realization: 'REALIZATION',
-    Substitution: 'SUBSTITUTION',
-    Usage: 'USAGE'
-};
-
-const MULTIPLICITY_TYPES = new Set<UmlRelationType>(['Association', 'Aggregation', 'Composition']);
-
-const NAMED_TYPES = new Set<UmlRelationType>([
-    'Association', 'Aggregation', 'Composition', 'Abstraction', 'Dependency',
-    'InterfaceRealization', 'Realization', 'Substitution', 'Usage'
-]);
 
 interface UmlNode {
     __id: string;
@@ -70,15 +48,6 @@ interface UmlDiagramFile {
 @injectable()
 export class AddRelationTool implements vscode.LanguageModelTool<AddRelationInput> {
     constructor(@inject(OutputChannel) protected readonly outputChannel: OutputChannel) {}
-
-    prepareInvocation(
-        options: vscode.LanguageModelToolInvocationPrepareOptions<AddRelationInput>
-    ): vscode.PreparedToolInvocation {
-        return {
-            invocationMessage: `Adding ${options.input.relationType} ${options.input.sourceName} → ${options.input.targetName}`,
-            ...confirmationFor(`Add ${options.input.relationType} from ${options.input.sourceName} to ${options.input.targetName}?`)
-        };
-    }
 
     async invoke(
         options: vscode.LanguageModelToolInvocationOptions<AddRelationInput>,
@@ -131,7 +100,7 @@ export class AddRelationTool implements vscode.LanguageModelTool<AddRelationInpu
         const elementTypeId = GLSP_EDGE_TYPE_ID[relationType];
         const glspSuccess = await vscode.commands.executeCommand<boolean>(
             'biguml.operations.createEdge', filePath, elementTypeId, sourceNode.__id, targetNode.__id,
-            NAMED_TYPES.has(relationType) ? relationName : undefined
+            NAMED_RELATION_TYPES.has(relationType) ? relationName : undefined
         );
         if (glspSuccess === true) {
             this.outputChannel.appendLine(`[big-ai] Added ${relationType} from "${sourceElementName}" to "${targetElementName}" via GLSP operation`);
@@ -139,39 +108,20 @@ export class AddRelationTool implements vscode.LanguageModelTool<AddRelationInpu
         }
 
         // Fallback: write directly to file (diagram not open)
-        const id = generateId();
-        const ref = (nodeId: string) => ({ __type: 'Reference', __refType: 'Node', __value: nodeId });
-
-        const relation: Record<string, unknown> = {
-            __type: relationType,
-            __id: id,
-            source: ref(sourceNode.__id),
-            target: ref(targetNode.__id),
-            relationType: RELATION_TYPE_MAP[relationType]
-        };
-
-        if (NAMED_TYPES.has(relationType) && relationName !== undefined) {
-            relation['name'] = relationName;
-        }
-
-        if (MULTIPLICITY_TYPES.has(relationType)) {
-            if (sourceMultiplicity !== undefined) relation['sourceMultiplicity'] = sourceMultiplicity;
-            if (targetMultiplicity !== undefined) relation['targetMultiplicity'] = targetMultiplicity;
-        }
-
-        if (relationType === 'Generalization') {
-            relation['isSubstitutable'] = false;
-        }
+        const relation = buildRelationRecord({
+            relationType,
+            sourceId: sourceNode.__id,
+            targetId: targetNode.__id,
+            name: relationName,
+            sourceMultiplicity,
+            targetMultiplicity
+        });
+        const id = relation['__id'] as string;
 
         diagram.diagram.relations.push(relation);
-        await vscode.workspace.fs.writeFile(uri, Buffer.from(JSON.stringify(diagram, null, '\t'), 'utf-8'));
+        await vscode.workspace.fs.writeFile(uri, Buffer.from(stringifyUmlDiagramFile(diagram), 'utf-8'));
 
         this.outputChannel.appendLine(`[big-ai] Added ${relationType} from "${sourceElementName}" to "${targetElementName}" (id: ${id}) via file write`);
         return createToolResult(`Added ${relationType} from "${sourceElementName}" to "${targetElementName}" (id: ${id}) in ${filePath}`);
     }
-}
-
-function generateId(): string {
-    const uuid = randomUUID();
-    return `a${uuid.substring(1)}`;
 }

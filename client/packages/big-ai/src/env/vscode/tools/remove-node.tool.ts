@@ -11,7 +11,7 @@ import { OutputChannel } from '@borkdominik-biguml/big-vscode/vscode';
 import { inject, injectable } from 'inversify';
 import * as vscode from 'vscode';
 import type { RemoveNodeInput } from '../../common/index.js';
-import { confirmationFor, createToolResult, resolveWorkspacePath, validateRequiredString, validateUmlDiagramFile } from './tool-utils.js';
+import { createToolResult, resolveWorkspacePath, validateRequiredString, validateUmlDiagramFile } from './tool-utils.js';
 
 interface UmlNode {
     __type: string;
@@ -42,15 +42,6 @@ interface UmlDiagramFile {
 @injectable()
 export class RemoveNodeTool implements vscode.LanguageModelTool<RemoveNodeInput> {
     constructor(@inject(OutputChannel) protected readonly outputChannel: OutputChannel) {}
-
-    prepareInvocation(
-        options: vscode.LanguageModelToolInvocationPrepareOptions<RemoveNodeInput>
-    ): vscode.PreparedToolInvocation {
-        return {
-            invocationMessage: `Removing "${options.input.elementName}"`,
-            ...confirmationFor(`Remove "${options.input.elementName}" from the diagram?`)
-        };
-    }
 
     async invoke(
         options: vscode.LanguageModelToolInvocationOptions<RemoveNodeInput>,

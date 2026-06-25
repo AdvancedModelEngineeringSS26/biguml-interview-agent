@@ -11,7 +11,7 @@ import { OutputChannel } from '@borkdominik-biguml/big-vscode/vscode';
 import { inject, injectable } from 'inversify';
 import * as vscode from 'vscode';
 import type { RemoveRelationInput } from '../../common/index.js';
-import { confirmationFor, createToolResult, resolveWorkspacePath, validateRequiredString, validateUmlDiagramFile } from './tool-utils.js';
+import { createToolResult, resolveWorkspacePath, validateRequiredString, validateUmlDiagramFile } from './tool-utils.js';
 
 interface UmlNode {
     __id: string;
@@ -38,15 +38,6 @@ interface UmlDiagramFile {
 @injectable()
 export class RemoveRelationTool implements vscode.LanguageModelTool<RemoveRelationInput> {
     constructor(@inject(OutputChannel) protected readonly outputChannel: OutputChannel) {}
-
-    prepareInvocation(
-        options: vscode.LanguageModelToolInvocationPrepareOptions<RemoveRelationInput>
-    ): vscode.PreparedToolInvocation {
-        return {
-            invocationMessage: `Removing relation ${options.input.sourceName} → ${options.input.targetName}`,
-            ...confirmationFor(`Remove the relation from ${options.input.sourceName} to ${options.input.targetName}?`)
-        };
-    }
 
     async invoke(
         options: vscode.LanguageModelToolInvocationOptions<RemoveRelationInput>,

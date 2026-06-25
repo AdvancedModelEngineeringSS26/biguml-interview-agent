@@ -14,3 +14,4 @@ That required upgrading the workspace to:
 ## Notes
 
 - the dummy tool exists only to validate the participant → LM → tool → LM roundtrip
+- see [Interview Generation Testing](INTERVIEW_GENERATION_TESTING.md) for the `/interview` QA flow

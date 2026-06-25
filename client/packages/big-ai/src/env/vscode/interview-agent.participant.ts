@@ -11,21 +11,14 @@ import type { OnActivate, OnDispose } from '@borkdominik-biguml/big-vscode/vscod
 import { injectable } from 'inversify';
 import * as vscode from 'vscode';
 import { AI_PARTICIPANT_ID, UML_TOOL_NAMES, COMMAND_PATTERNS, SYSTEM_PROMPT } from '../common/index.js';
-import type { ParsedCommand } from '../common/tool-types.js';
 import { resolveWorkspacePath } from './tools/tool-utils.js';
+import type { GenerateClassDiagramInput, InterviewPhase, InterviewState, ParsedCommand } from '../common/tool-types.js';
 
-/** Tools that create or modify a .uml file; successful runs get an inline anchor to the touched file. */
-const MUTATING_TOOL_NAMES: ReadonlySet<string> = new Set<string>([
-    UML_TOOL_NAMES.createUmlFile,
-    UML_TOOL_NAMES.addNode,
-    UML_TOOL_NAMES.removeNode,
-    UML_TOOL_NAMES.addRelation,
-    UML_TOOL_NAMES.removeRelation
-]);
-
-/** Max LM round-trips per request; each round may stream text and/or invoke (possibly several) tools. Sized for multi-step edits like several nodes plus their relations. */
-const MAX_TOOL_ITERATIONS = 12;
-
+const MAX_HISTORY_TURNS = 10;
+const READ_ONLY_TOOL_NAMES = [UML_TOOL_NAMES.readUmlFile] as const;
+const GENERATION_TOOL_NAMES = [
+    UML_TOOL_NAMES.generateClassDiagram
+] as const;
 
 @injectable()
 export class InterviewAgentParticipant implements OnActivate, OnDispose {
@@ -53,10 +46,9 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
 
     protected buildHistoryMessages(context: vscode.ChatContext): vscode.LanguageModelChatMessage[] {
         const messages: vscode.LanguageModelChatMessage[] = [];
-        const MAX_HISTORY_TURNS = 10; 
-        const recentHistory = context.history.slice(-MAX_HISTORY_TURNS); 
+        const recentHistory = context.history.slice(-MAX_HISTORY_TURNS);
 
-        for (const turn of recentHistory) { 
+        for (const turn of recentHistory) {
             if (turn instanceof vscode.ChatRequestTurn) {
                 messages.push(vscode.LanguageModelChatMessage.User(turn.prompt));
             } else if (turn instanceof vscode.ChatResponseTurn) {
@@ -75,335 +67,47 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         return messages;
     }
 
+    protected buildInterviewTranscript(context: vscode.ChatContext): string {
+        const lines: string[] = [];
+        const recentHistory = context.history.slice(-MAX_HISTORY_TURNS);
+
+        for (const turn of recentHistory) {
+            if (turn instanceof vscode.ChatRequestTurn) {
+                lines.push(`User: ${turn.prompt}`);
+                continue;
+            }
+
+            if (turn instanceof vscode.ChatResponseTurn) {
+                const responseText = this.responseTurnText(turn);
+                if (responseText.trim()) {
+                    lines.push(`Assistant: ${responseText}`);
+                }
+            }
+        }
+
+        return lines.length > 0 ? lines.join('\n\n') : 'No prior chat history.';
+    }
+
+    protected responseTurnText(turn: vscode.ChatResponseTurn): string {
+        return turn.response
+            .filter((part): part is vscode.ChatResponseMarkdownPart =>
+                part instanceof vscode.ChatResponseMarkdownPart
+            )
+            .map(part => part.value.value)
+            .join('\n');
+    }
+
     protected buildUserMessage(request: vscode.ChatRequest, command: ParsedCommand): string {
         if (command.argument.trim()) {
             return command.argument.trim();
         }
         const defaults: Record<string, string> = {
-            interview: 'Please analyze the current UML diagram.',
+            interview: 'Please start a requirements interview for a UML class diagram.',
             modify: 'Please suggest improvements to the current design.',
             explain: 'Please explain the current UML structure.',
             default: request.prompt
         };
         return defaults[command.type] ?? request.prompt;
-    }
-
-    protected async buildReferenceMessages(
-        request: vscode.ChatRequest
-    ): Promise<vscode.LanguageModelChatMessage[]> {
-        const MAX_REFERENCE_CHARS = 30_000;
-        const messages: vscode.LanguageModelChatMessage[] = [];
-
-        for (const ref of request.references) {
-            const label = ref.id;
-            try {
-                const resolved = await this.resolveReferenceContent(ref);
-                if (resolved === undefined) {
-                    this.outputChannel.appendLine(`[big-ai] Reference ${label}: unsupported value type, skipped`);
-                    continue;
-                }
-
-                const { content, source } = resolved;
-                const truncated = content.length > MAX_REFERENCE_CHARS;
-                const payload = truncated
-                    ? `${content.slice(0, MAX_REFERENCE_CHARS)}\n…[truncated, original length: ${content.length} chars]`
-                    : content;
-
-                this.outputChannel.appendLine(
-                    `[big-ai] Reference ${label} resolved from ${source} (${content.length} chars${truncated ? ', truncated' : ''})`
-                );
-
-                messages.push(
-                    vscode.LanguageModelChatMessage.User(
-                        `[Attached reference: ${label}${source ? ` (${source})` : ''}]\n${payload}`
-                    )
-                );
-            } catch (error) {
-                const message = error instanceof Error ? error.message : String(error);
-                this.outputChannel.appendLine(`[big-ai] Reference ${label} failed to resolve: ${message}`);
-                messages.push(
-                    vscode.LanguageModelChatMessage.User(
-                        `[Attached reference: ${label}]\n(Failed to read content: ${message})`
-                    )
-                );
-            }
-        }
-
-        return messages;
-    }
-
-    protected async selectModel(): Promise<vscode.LanguageModelChat | undefined> {
-        const config = vscode.workspace.getConfiguration('bigUML.ai');
-        const vendor = config.get<string>('modelVendor')?.trim() || 'copilot';
-        const family = config.get<string>('modelFamily')?.trim() || 'gpt-4o';
-
-        const requested = await vscode.lm.selectChatModels({ vendor, family });
-        if (requested.length > 0) {
-            return requested[0];
-        }
-        this.outputChannel.appendLine(
-            `[big-ai] Requested model ${vendor}/${family} not available, falling back to any available model`
-        );
-
-        const sameVendor = await vscode.lm.selectChatModels({ vendor });
-        if (sameVendor.length > 0) {
-            return sameVendor[0];
-        }
-        const anyModel = await vscode.lm.selectChatModels();
-        return anyModel[0];
-    }
-
-    protected getActiveUmlUri(): vscode.Uri | undefined {
-        const activeTab = vscode.window.tabGroups.activeTabGroup?.activeTab;
-        if (!activeTab) {
-            return undefined;
-        }
-
-        const input = activeTab.input;
-        let uri: vscode.Uri | undefined;
-        if (input instanceof vscode.TabInputText) {
-            uri = input.uri;
-        } else if (input instanceof vscode.TabInputCustom) {
-            uri = input.uri;
-        } else if (input instanceof vscode.TabInputNotebook) {
-            uri = input.uri;
-        }
-
-        if (!uri || !uri.path.toLowerCase().endsWith('.uml')) {
-            return undefined;
-        }
-        return uri;
-    }
-
-    /** Path of a URI relative to the workspace root — the form the tools expect for their `filePath` argument. */
-    protected toWorkspaceRelative(uri: vscode.Uri): string {
-        return vscode.workspace.asRelativePath(uri, false);
-    }
-
-    protected async buildAutoAttachMessages(
-        request: vscode.ChatRequest
-    ): Promise<vscode.LanguageModelChatMessage[]> {
-        const MAX_CONTENT_CHARS = 30_000;
-        const activeUri = this.getActiveUmlUri();
-        if (!activeUri) {
-            return [];
-        }
-
-        const alreadyAttached = request.references.some(ref => {
-            const v = ref.value;
-            if (v instanceof vscode.Uri) {
-                return v.toString() === activeUri.toString();
-            }
-            if (v instanceof vscode.Location) {
-                return v.uri.toString() === activeUri.toString();
-            }
-            return false;
-        });
-        if (alreadyAttached) {
-            this.outputChannel.appendLine(
-                `[big-ai] Active UML file ${activeUri.fsPath} already explicitly referenced, skipping auto-attach`
-            );
-            return [];
-        }
-
-        try {
-            const bytes = await vscode.workspace.fs.readFile(activeUri);
-            const content = new TextDecoder().decode(bytes);
-            const truncated = content.length > MAX_CONTENT_CHARS;
-            const payload = truncated
-                ? `${content.slice(0, MAX_CONTENT_CHARS)}\n…[truncated, original length: ${content.length} chars]`
-                : content;
-
-            this.outputChannel.appendLine(
-                `[big-ai] Auto-attached active UML file ${activeUri.fsPath} (${content.length} chars${truncated ? ', truncated' : ''})`
-            );
-
-            const relPath = this.toWorkspaceRelative(activeUri);
-            return [
-                vscode.LanguageModelChatMessage.User(
-                    `[Auto-attached active UML diagram: ${relPath}]\n` +
-                        `When calling tools that take a filePath, pass exactly this workspace-relative path: "${relPath}".\n` +
-                        payload
-                )
-            ];
-        } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            this.outputChannel.appendLine(`[big-ai] Failed to auto-attach active UML file: ${message}`);
-            return [];
-        }
-    }
-
-    protected async resolveReferenceContent(
-        ref: vscode.ChatPromptReference
-    ): Promise<{ content: string; source: string } | undefined> {
-        const { value } = ref;
-
-        if (value instanceof vscode.Uri) {
-            const bytes = await vscode.workspace.fs.readFile(value);
-            return { content: new TextDecoder().decode(bytes), source: this.toWorkspaceRelative(value) };
-        }
-
-        if (value instanceof vscode.Location) {
-            const document = await vscode.workspace.openTextDocument(value.uri);
-            return {
-                content: document.getText(value.range),
-                source: `${this.toWorkspaceRelative(value.uri)}:${value.range.start.line + 1}-${value.range.end.line + 1}`
-            };
-        }
-
-        if (typeof value === 'string') {
-            return { content: value, source: 'inline' };
-        }
-
-        return undefined;
-    }
-
-    /** Human-readable progress label for a tool invocation, with a counter when several run in one turn. */
-    protected describeToolProgress(
-        toolCall: vscode.LanguageModelToolCallPart,
-        index: number,
-        total: number
-    ): string {
-        const input = (toolCall.input ?? {}) as Record<string, unknown>;
-        const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
-
-        let label: string;
-        switch (toolCall.name) {
-            case UML_TOOL_NAMES.createUmlFile:
-                label = `Creating diagram ${this.fileLabel(str(input.filePath))}`;
-                break;
-            case UML_TOOL_NAMES.readUmlFile:
-                label = `Reading diagram ${this.fileLabel(str(input.filePath))}`;
-                break;
-            case UML_TOOL_NAMES.addNode:
-                label = `Adding ${str(input.elementType) ?? 'element'} "${str(input.name) ?? '?'}"`;
-                break;
-            case UML_TOOL_NAMES.removeNode:
-                label = `Removing "${str(input.elementName) ?? '?'}"`;
-                break;
-            case UML_TOOL_NAMES.addRelation:
-                label = `Adding ${str(input.relationType) ?? 'relation'} ${str(input.sourceName) ?? '?'} → ${str(input.targetName) ?? '?'}`;
-                break;
-            case UML_TOOL_NAMES.removeRelation:
-                label = `Removing relation ${str(input.sourceName) ?? '?'} → ${str(input.targetName) ?? '?'}`;
-                break;
-            default:
-                label = `Running ${toolCall.name}`;
-        }
-
-        return total > 1 ? `(${index}/${total}) ${label}…` : `${label}…`;
-    }
-
-    /** Basename of a workspace path wrapped in backticks for inline display. */
-    protected fileLabel(filePath: string | undefined): string {
-        if (!filePath) {
-            return 'file';
-        }
-        const base = filePath.split(/[\\/]/).pop() || filePath;
-        return `\`${base}\``;
-    }
-
-    /**
-     * After a mutating tool succeeds, emit a short "✓ <change> in <file>" line followed by an inline
-     * anchor to the touched .uml file. VS Code renders a file Uri anchor with its basename (the optional
-     * title is ignored), so the leading markdown carries the semantic label (which element/relation changed).
-     * Skipped when the tool returned an error result or when the same change was already anchored this turn.
-     */
-    protected emitToolAnchor(
-        stream: vscode.ChatResponseStream,
-        toolCall: vscode.LanguageModelToolCallPart,
-        result: vscode.LanguageModelToolResult,
-        anchored: Set<string>
-    ): void {
-        if (!MUTATING_TOOL_NAMES.has(toolCall.name)) {
-            return;
-        }
-        if (this.toolResultText(result).trimStart().toLowerCase().startsWith('error')) {
-            return;
-        }
-
-        const input = (toolCall.input ?? {}) as Record<string, unknown>;
-        const filePath = typeof input.filePath === 'string' ? input.filePath : undefined;
-        if (!filePath) {
-            return;
-        }
-
-        let uri: vscode.Uri;
-        try {
-            uri = resolveWorkspacePath(filePath);
-        } catch {
-            return;
-        }
-
-        const description = this.describeToolChange(toolCall, input);
-        const key = `${uri.toString()}::${description}`;
-        if (anchored.has(key)) {
-            return;
-        }
-        anchored.add(key);
-
-        stream.markdown(`\n\n✓ ${description} in `);
-        stream.anchor(uri);
-    }
-
-    /** Plain-language description of what a mutating tool changed, used as the inline anchor's label. */
-    protected describeToolChange(
-        toolCall: vscode.LanguageModelToolCallPart,
-        input: Record<string, unknown>
-    ): string {
-        const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
-        switch (toolCall.name) {
-            case UML_TOOL_NAMES.createUmlFile:
-                return 'Created diagram';
-            case UML_TOOL_NAMES.addNode:
-                return `Added ${str(input.elementType) ?? 'element'} **${str(input.name) ?? '?'}**`;
-            case UML_TOOL_NAMES.removeNode:
-                return `Removed **${str(input.elementName) ?? '?'}**`;
-            case UML_TOOL_NAMES.addRelation:
-                return `Added ${str(input.relationType) ?? 'relation'} **${str(input.sourceName) ?? '?'} → ${str(input.targetName) ?? '?'}**`;
-            case UML_TOOL_NAMES.removeRelation:
-                return `Removed relation **${str(input.sourceName) ?? '?'} → ${str(input.targetName) ?? '?'}**`;
-            default:
-                return 'Updated diagram';
-        }
-    }
-
-    /** Concatenate the text parts of a tool result. */
-    protected toolResultText(result: vscode.LanguageModelToolResult): string {
-        return result.content
-            .filter((part): part is vscode.LanguageModelTextPart => part instanceof vscode.LanguageModelTextPart)
-            .map(part => part.value)
-            .join('\n');
-    }
-
-    /**
-     * Emit standalone command buttons (rendered in the Chat panel only) as calls-to-action.
-     * After a discussion that made no edits we offer a "Generate in diagram" button that re-asks the
-     * agent to build what it just recommended; in interview mode a "Skip & continue" button moves the
-     * conversation on. Both submit a follow-up request via the built-in chat-open command. After the
-     * agent has already applied edits we rely on the inline anchors and follow-up suggestions instead.
-     */
-    protected emitActionButtons(stream: vscode.ChatResponseStream, commandType: string, toolUsed: boolean): void {
-        if (toolUsed) {
-            return;
-        }
-
-        const hasDiagram = this.getActiveUmlUri() !== undefined;
-        if (hasDiagram && commandType !== 'explain') {
-            stream.button({
-                title: 'Generate in diagram',
-                command: 'workbench.action.chat.open',
-                arguments: [{ query: '@biguml /modify Add to the active diagram the elements and relationships you just recommended. Do not remove existing elements.' }]
-            });
-        }
-
-        if (commandType === 'interview') {
-            stream.button({
-                title: 'Skip & continue',
-                command: 'workbench.action.chat.open',
-                arguments: [{ query: '@biguml /interview Skip that and move on to the next aspect of the design.' }]
-            });
-        }
     }
 
 
@@ -414,13 +118,18 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         token: vscode.CancellationToken
     ): Promise<vscode.ChatResult> {
         const parsedCommand = this.parseCommand(request.prompt);
+        const interviewState = this.deriveInterviewState(context, request.prompt, parsedCommand);
+        const allowedToolNames = interviewState.confirmed ? GENERATION_TOOL_NAMES : READ_ONLY_TOOL_NAMES;
+
         this.outputChannel.appendLine(`[big-ai] Request: ${request.prompt}`);
         this.outputChannel.appendLine(`[big-ai] Command type: ${parsedCommand.type}`);
+        this.outputChannel.appendLine(`[big-ai] Interview phase: ${interviewState.phase}`);
+        this.outputChannel.appendLine(`[big-ai] Generation confirmed: ${interviewState.confirmed}`);
         this.outputChannel.appendLine(`[big-ai] Conversation turn: ${context.history.length + 1}`);
 
         const model = await this.selectModel();
         if (!model) {
-            stream.markdown('**Error**: No compatible chat model is available. Please ensure Copilot Chat is installed and authenticated, or change `bigUML.ai.modelVendor` / `bigUML.ai.modelFamily` in settings.');
+            stream.markdown('**Error**: No compatible chat model is available. Please ensure GitHub Copilot Chat is installed and authenticated, or adjust `bigUML.ai.modelVendor` / `bigUML.ai.modelFamily` in settings.');
             return {
                 metadata: {
                     command: parsedCommand.type,
@@ -433,10 +142,13 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
 
         const historyMessages = this.buildHistoryMessages(context);
         const referenceMessages = await this.buildReferenceMessages(request);
-        const autoAttachMessages = await this.buildAutoAttachMessages(request);
+        // During the confirmed generation turn, the interview transcript is the source of truth for what to
+        // build and where. Skip auto-attaching the active diagram so its path/content can't hijack the target
+        // file (e.g. overwrite the open diagram instead of creating the new one discussed in the interview).
+        const autoAttachMessages = interviewState.confirmed ? [] : await this.buildAutoAttachMessages(request);
 
         const messages: vscode.LanguageModelChatMessage[] = [
-            vscode.LanguageModelChatMessage.User(this.buildSystemMessage(request, parsedCommand)),
+            vscode.LanguageModelChatMessage.User(this.buildSystemMessage(request, context, parsedCommand, interviewState)),
             ...historyMessages,
             ...referenceMessages,
             ...autoAttachMessages,
@@ -445,16 +157,24 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
 
         let toolUsed = false;
         let responseStreamed = false;
-        const anchoredFiles = new Set<string>();
+        let streamedText = '';
+        const requireToolCalls = interviewState.confirmed;
+
+        if (requireToolCalls) {
+            stream.progress('Generating class diagram…');
+        }
 
         try {
-            for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS && !token.isCancellationRequested; iteration++) {
-                this.outputChannel.appendLine(`[big-ai] LM request iteration ${iteration + 1}/${MAX_TOOL_ITERATIONS}`);
+            let generationRetryRequested = false;
+
+            const maxGenerationIterations = 3;
+            for (let iteration = 0; iteration < maxGenerationIterations && !token.isCancellationRequested; iteration++) {
+                this.outputChannel.appendLine(`[big-ai] LM request iteration ${iteration + 1}/${maxGenerationIterations}`);
                 
                 const response = await model.sendRequest(
                     messages,
                     {
-                        tools: vscode.lm.tools.filter(tool => (Object.values(UML_TOOL_NAMES) as string[]).includes(tool.name))
+                        tools: vscode.lm.tools.filter(tool => (allowedToolNames as readonly string[]).includes(tool.name))
                     },
                     token
                 );
@@ -463,8 +183,11 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
 
                 for await (const part of response.stream) {
                     if (part instanceof vscode.LanguageModelTextPart) {
-                        stream.markdown(part.value);
-                        responseStreamed = true;
+                        if (!requireToolCalls) {
+                            stream.markdown(part.value);
+                            streamedText += part.value;
+                            responseStreamed = true;
+                        }
                         continue;
                     }
 
@@ -475,6 +198,30 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
 
                 if (toolCalls.length === 0) {
                     this.outputChannel.appendLine(`[big-ai] No tool calls in iteration ${iteration + 1}, completing`);
+                    if (requireToolCalls && !generationRetryRequested) {
+                        generationRetryRequested = true;
+                        this.outputChannel.appendLine('[big-ai] Confirmed generation produced no tool call; deriving aggregate input as JSON');
+                        const generatedInput = await this.requestGenerationInput(model, messages, token);
+                        const toolResult = await vscode.lm.invokeTool(
+                            UML_TOOL_NAMES.generateClassDiagram,
+                            {
+                                input: generatedInput as unknown as object,
+                                toolInvocationToken: request.toolInvocationToken
+                            },
+                            token
+                        );
+                        toolUsed = true;
+                        await this.announceGeneration(stream, this.inputFilePath(generatedInput), toolResult);
+                        responseStreamed = true;
+                        break;
+                    }
+                    if (requireToolCalls && !responseStreamed) {
+                        this.outputChannel.appendLine('[big-ai] Generation turn produced text instead of tool calls; suppressing model text');
+                        stream.markdown(
+                            '**Error**: Generation was confirmed, but the diagram generator could not derive the generation input.'
+                        );
+                        responseStreamed = true;
+                    }
                     break;
                 }
 
@@ -482,9 +229,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                 this.outputChannel.appendLine(`[big-ai] Tool calls collected: ${toolCalls.length}`);
                 messages.push(vscode.LanguageModelChatMessage.Assistant(toolCalls));
 
-                for (let i = 0; i < toolCalls.length; i++) {
-                    const toolCall = toolCalls[i];
-                    stream.progress(this.describeToolProgress(toolCall, i + 1, toolCalls.length));
+                for (const toolCall of toolCalls) {
                     try {
                         const toolResult = await vscode.lm.invokeTool(
                             toolCall.name,
@@ -495,30 +240,29 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                             token
                         );
                         this.outputChannel.appendLine(`[big-ai] Tool invoked: ${toolCall.name}`);
-                        this.emitToolAnchor(stream, toolCall, toolResult, anchoredFiles);
                         messages.push(
                             vscode.LanguageModelChatMessage.User([
                                 new vscode.LanguageModelToolResultPart(toolCall.callId, toolResult.content)
                             ])
                         );
+
+                        // The generation tool writes the .uml file but does not surface or open it, so the run
+                        // looks like "nothing happened". Announce the result with a clickable anchor and open the
+                        // diagram so the user sees it.
+                        if (toolCall.name === UML_TOOL_NAMES.generateClassDiagram) {
+                            await this.announceGeneration(stream, this.inputFilePath(toolCall.input), toolResult);
+                            responseStreamed = true;
+                        }
                     } catch (toolError) {
-                        const message = toolError instanceof Error ? toolError.message : String(toolError);
-                        const declined = /cancel/i.test(message);
-                        this.outputChannel.appendLine(`[big-ai] Tool ${declined ? 'declined' : 'error'} (${toolCall.name}): ${message}`);
-                        stream.markdown(
-                            declined
-                                ? '\n\n⚠️ Change declined — stopped applying further changes. Earlier confirmed changes were kept.'
-                                : `\n\n**Could not apply change**: ${message}`
-                        );
-                        return {
-                            metadata: {
-                                command: parsedCommand.type,
-                                toolUsed,
-                                responseStreamed,
-                                declined
-                            }
-                        };
+                        this.outputChannel.appendLine(`[big-ai] Tool error: ${toolError instanceof Error ? toolError.message : String(toolError)}`);
+                        throw toolError;
                     }
+                }
+
+                // In confirmed/generation mode a single generate call is the whole job. Stop here so the
+                // no-tool-call fallback below cannot run a second, redundant generation.
+                if (requireToolCalls) {
+                    break;
                 }
             }
         } catch (error) {
@@ -528,12 +272,6 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
             }
         }
 
-        if (responseStreamed) {
-            stream.markdown(`\n\n---\n_via ${model.vendor}/${model.family}_`);
-        }
-
-        this.emitActionButtons(stream, parsedCommand.type, toolUsed);
-
         this.outputChannel.appendLine(`[big-ai] Response complete (tool_used: ${toolUsed})`);
 
         return {
@@ -541,9 +279,162 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                 command: parsedCommand.type,
                 toolUsed,
                 responseStreamed,
-                commandArgument: parsedCommand.argument || ''
+                commandArgument: parsedCommand.argument || '',
+                interviewPhase: interviewState.phase,
+                awaitingConfirmation: interviewState.awaitingConfirmation,
+                generationConfirmed: interviewState.confirmed,
+                presentedSummary: this.looksLikeGenerationSummary(streamedText)
             }
         };
+    }
+
+    protected async requestGenerationInput(
+        model: vscode.LanguageModelChat,
+        messages: vscode.LanguageModelChatMessage[],
+        token: vscode.CancellationToken
+    ): Promise<GenerateClassDiagramInput> {
+        const extractionMessages = [
+            ...messages,
+            vscode.LanguageModelChatMessage.User(`Return only the JSON input for biguml-generate-class-diagram. Do not call tools and do not include markdown.
+The JSON shape is:
+{
+  "filePath": "workspace-relative-target.uml",
+  "diagramType": "CLASS",
+  "entities": [
+    {
+      "name": "ClassName",
+      "elementType": "Class | AbstractClass | Interface | Enumeration | Package | DataType | PrimitiveType",
+      "properties": [{ "name": "propertyName", "typeName": "TypeName", "visibility": "PUBLIC | PRIVATE | PROTECTED | PACKAGE", "multiplicity": "optional" }],
+      "operations": [{ "name": "operationName", "visibility": "PUBLIC | PRIVATE | PROTECTED | PACKAGE" }]
+    }
+  ],
+  "relationships": [
+    {
+      "relationType": "Association | Aggregation | Composition | Generalization | Dependency | InterfaceRealization | Realization | Abstraction | Usage",
+      "sourceName": "SourceClass",
+      "targetName": "TargetClass",
+      "name": "optional relation label",
+      "sourceMultiplicity": "optional",
+      "targetMultiplicity": "optional"
+    }
+  ]
+}
+Use only confirmed information from the transcript. Include relationships after all entities. If operations have return types in the transcript, keep only the operation names because the current tool schema has no operation return type field.`)
+        ];
+
+        const response = await model.sendRequest(extractionMessages, {}, token);
+        let text = '';
+        for await (const part of response.stream) {
+            if (part instanceof vscode.LanguageModelTextPart) {
+                text += part.value;
+            }
+        }
+
+        const parsed = this.parseJsonObject(text);
+        return parsed as GenerateClassDiagramInput;
+    }
+
+    protected parseJsonObject(text: string): unknown {
+        const trimmed = text.trim();
+        if (!trimmed) {
+            throw new Error('The language model returned no generation input.');
+        }
+
+        const fencedMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+        const candidate = fencedMatch?.[1]?.trim() ?? trimmed;
+        const start = candidate.indexOf('{');
+        const end = candidate.lastIndexOf('}');
+        if (start < 0 || end < start) {
+            throw new Error('The language model did not return JSON generation input.');
+        }
+
+        try {
+            return JSON.parse(candidate.slice(start, end + 1));
+        } catch (error) {
+            throw new Error(`Invalid JSON generation input: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
+
+    protected toolResultText(toolResult: vscode.LanguageModelToolResult): string {
+        return toolResult.content
+            .filter((part): part is vscode.LanguageModelTextPart => part instanceof vscode.LanguageModelTextPart)
+            .map(part => part.value)
+            .join('\n');
+    }
+
+    /** The `filePath` field from a tool input, if present and non-empty. */
+    protected inputFilePath(input: unknown): string | undefined {
+        if (input && typeof input === 'object' && 'filePath' in input) {
+            const value = (input as { filePath?: unknown }).filePath;
+            if (typeof value === 'string' && value.trim()) {
+                return value.trim();
+            }
+        }
+        return undefined;
+    }
+
+    /**
+     * Surface the outcome of a generate-class-diagram call: on success, emit a clickable anchor to the
+     * generated `.uml` file and open it so the diagram renders; on failure, show the error. The generation
+     * tool itself only writes the file and returns text — it never opens or anchors it — so without this the
+     * run looks like nothing happened.
+     */
+    protected async announceGeneration(
+        stream: vscode.ChatResponseStream,
+        filePath: string | undefined,
+        toolResult: vscode.LanguageModelToolResult
+    ): Promise<void> {
+        const resultText = this.toolResultText(toolResult);
+        const errored = resultText.trimStart().toLowerCase().startsWith('error');
+
+        let uri: vscode.Uri | undefined;
+        if (filePath) {
+            const normalized = filePath.toLowerCase().endsWith('.uml') ? filePath : `${filePath}.uml`;
+            try {
+                uri = resolveWorkspacePath(normalized);
+            } catch {
+                uri = undefined;
+            }
+        }
+
+        if (errored || !uri) {
+            stream.markdown(resultText.trim() ? `\n\n${resultText}` : '\n\n**Error**: The diagram could not be generated.');
+            return;
+        }
+
+        stream.markdown('\n\n✓ Generated the class diagram in ');
+        stream.anchor(uri);
+        await this.openDiagram(uri);
+    }
+
+    /**
+     * Open a `.uml` file with its default (bigUML diagram) editor so the generated diagram is visible.
+     * The diagram (GLSP) server can race a brand-new file and render a blank canvas (a failed `requestModel`);
+     * a manual close+reopen always loads it correctly. We replicate that deterministically: open, let the
+     * server pick up the file, then reopen a fresh editor that loads the model.
+     */
+    protected async openDiagram(uri: vscode.Uri): Promise<void> {
+        try {
+            await vscode.commands.executeCommand('vscode.open', uri);
+            await this.delay(700);
+
+            const tabs = vscode.window.tabGroups.all
+                .flatMap(group => group.tabs)
+                .filter(tab => tab.input instanceof vscode.TabInputCustom && tab.input.uri.toString() === uri.toString());
+            if (tabs.length > 0) {
+                await vscode.window.tabGroups.close(tabs);
+                await this.delay(150);
+            }
+            await vscode.commands.executeCommand('vscode.open', uri);
+        } catch (error) {
+            this.outputChannel.appendLine(
+                `[big-ai] Could not open generated diagram: ${error instanceof Error ? error.message : String(error)}`
+            );
+        }
+    }
+
+    protected delay(ms: number): Promise<void> {
+        return new Promise(resolve => setTimeout(resolve, ms));
     }
 
     protected parseCommand(prompt: string): ParsedCommand {
@@ -583,22 +474,38 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         _token: vscode.CancellationToken
     ): vscode.ChatFollowup[] {
         const commandType = (result.metadata?.command ?? 'default') as string;
-        
+        const awaitingConfirmation = result.metadata?.awaitingConfirmation === true;
+
         const followupsByCommand: Record<string, vscode.ChatFollowup[]> = {
-            interview: [
-                {
-                    prompt: '/interview What design patterns are applied?',
-                    label: 'Ask about patterns'
-                },
-                {
-                    prompt: '/interview How would this scale with more entities?',
-                    label: 'Discuss scalability'
-                },
-                {
-                    prompt: '/modify Refactor based on your findings',
-                    label: 'Refactor now'
-                }
-            ],
+            interview: awaitingConfirmation
+                ? [
+                      {
+                          prompt: 'generate',
+                          label: 'Generate'
+                      },
+                      {
+                          prompt: '/interview Revise the summary',
+                          label: 'Revise summary'
+                      },
+                      {
+                          prompt: '/interview Add missing details',
+                          label: 'Add details'
+                      }
+                  ]
+                : [
+                      {
+                          prompt: '/interview Add the main entities',
+                          label: 'Add entities'
+                      },
+                      {
+                          prompt: '/interview Define relationships',
+                          label: 'Define relationships'
+                      },
+                      {
+                          prompt: '/interview Add attributes and operations',
+                          label: 'Add details'
+                      }
+                  ],
             modify: [
                 {
                     prompt: '/interview How does this improve the design?',
@@ -646,22 +553,154 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         return followupsByCommand[commandType] || followupsByCommand['default'];
     }
 
-    protected buildSystemMessage(request: vscode.ChatRequest, command: ParsedCommand): string {
+    protected deriveInterviewState(context: vscode.ChatContext, prompt: string, command: ParsedCommand): InterviewState {
+        const confirmed = this.isConfirmationTurn(context, prompt);
+        const awaitingConfirmation = this.previousAssistantRequestedGeneration(context);
+        const phase = this.deriveInterviewPhase(context, command, awaitingConfirmation, confirmed);
+
+        return {
+            phase,
+            diagramType: 'CLASS',
+            entities: [],
+            relationships: [],
+            details: [],
+            awaitingConfirmation,
+            confirmed
+        };
+    }
+
+    protected deriveInterviewPhase(
+        context: vscode.ChatContext,
+        command: ParsedCommand,
+        awaitingConfirmation: boolean,
+        confirmed: boolean
+    ): InterviewPhase {
+        if (confirmed) {
+            return 'generation';
+        }
+
+        if (awaitingConfirmation) {
+            return 'confirmation';
+        }
+
+        if (context.history.length === 0 || command.type === 'interview') {
+            return 'scope';
+        }
+
+        return 'details';
+    }
+
+    protected isConfirmationTurn(context: vscode.ChatContext, prompt: string): boolean {
+        const text = prompt.trim();
+
+        // An explicit request to generate is honored as long as a real interview exchange has happened,
+        // even if the assistant's prior summary wording did not match looksLikeGenerationSummary(). Weaker
+        // models (e.g. the free Copilot tier) word their summaries differently, so without this the user's
+        // explicit "generate" would be silently ignored and only the read-only tool offered.
+        const explicitGenerate =
+            /^\/?\s*generate\b/i.test(text) ||
+            /\b(generate|build|create)\s+(the\s+|a\s+|my\s+)?(class\s+|uml\s+)?(diagram|model|uml)\b/i.test(text);
+        if (explicitGenerate && this.hasInterviewExchange(context)) {
+            return true;
+        }
+
+        // Weaker acknowledgements only confirm right after the assistant explicitly asked to generate.
+        if (!this.previousAssistantRequestedGeneration(context)) {
+            return false;
+        }
+
+        return /\b(generate|create|confirm|confirmed|yes|yep|looks good|go ahead|proceed)\b/i.test(text);
+    }
+
+    /** True once the agent has produced at least one response — i.e. a real interview exchange exists. */
+    protected hasInterviewExchange(context: vscode.ChatContext): boolean {
+        return context.history.some(turn => turn instanceof vscode.ChatResponseTurn);
+    }
+
+    protected looksLikeGenerationSummary(text: string): boolean {
+        if (!text) {
+            return false;
+        }
+
+        const hasSummary = /\bsummary\b/i.test(text) || /^\s*-?\s*diagram file:/im.test(text);
+        const invitesGeneration =
+            /reply\b[\s\S]*?\bgenerate\b/i.test(text) ||
+            /\bgenerate\b[\s\S]*?\b(diagram|to create)\b/i.test(text);
+        const noMissingInfo =
+            /missing info(?:rmation)?:?\s*(none|no\b)/i.test(text) ||
+            /\b(nothing|no info\w*)\s+(?:is\s+)?missing\b/i.test(text);
+
+        return hasSummary && invitesGeneration && noMissingInfo;
+    }
+
+    protected previousAssistantRequestedGeneration(context: vscode.ChatContext): boolean {
+        const recentHistory = context.history.slice(-MAX_HISTORY_TURNS);
+
+        for (const turn of [...recentHistory].reverse()) {
+            if (!(turn instanceof vscode.ChatResponseTurn)) {
+                continue;
+            }
+
+            const recorded = turn.result?.metadata?.presentedSummary;
+            if (recorded === true) {
+                return true;
+            }
+            if (recorded === false) {
+                // The agent's own non-summary / error turn — skip so it cannot poison the gate.
+                continue;
+            }
+
+            // Turn predates the recorded flag (or was restored after a reload): use the text heuristic.
+            if (this.looksLikeGenerationSummary(this.responseTurnText(turn))) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    protected buildInterviewStateInstruction(context: vscode.ChatContext, interviewState: InterviewState): string {
+        const availableTools = interviewState.confirmed
+            ? 'generateClassDiagram only'
+            : 'readUmlFile only';
+
+        const generationRule = interviewState.confirmed
+            ? 'The user confirmed a complete prior summary with no missing information. Call biguml-generate-class-diagram exactly once with the complete confirmed diagram. This tool creates or replaces the target .uml file, then creates nodes, members, and relationships in deterministic order. Do not read the file first. Do not output raw UML.\nFor filePath: if the user named a target .uml file during the interview, use exactly that path. Otherwise create a NEW descriptive workspace-relative file named after the diagram subject (e.g. "library-system.uml") — do NOT reuse or overwrite the diagram currently open in the editor.'
+            : 'The user has not confirmed a complete summary. Do not call createUmlFile, addNode, addClassMember, addRelation, removeNode, or removeRelation. Continue the interview by asking exactly one clear, friendly question, or show the required summary only when no information is missing. You may offer concrete suggestions when useful, but label them as suggestions that the user can accept or change.';
+
+        return `## Interview State
+- Phase: ${interviewState.phase}
+- Diagram type: CLASS
+- Awaiting confirmation: ${interviewState.awaitingConfirmation}
+- Confirmed for generation: ${interviewState.confirmed}
+- Tools available this turn: ${availableTools}
+
+${generationRule}
+
+## Chat History Transcript
+Use this transcript as the source of truth for requirements. Do not invent missing requirements.
+If the last user message is a .uml path, treat it as the target diagram file, not as attribute or operation details.
+Only generate attributes or operations that the user explicitly named, explicitly accepted from the previous assistant suggestion, or explicitly requested no details.
+Short acknowledgements such as yes, ok, sure, use those, that works, and sounds good confirm the concrete items suggested in the immediately previous assistant turn.
+
+${this.buildInterviewTranscript(context)}`;
+    }
+
+    protected buildSystemMessage(
+        request: vscode.ChatRequest,
+        context: vscode.ChatContext,
+        command: ParsedCommand,
+        interviewState: InterviewState
+    ): string {
         const commandContexts = {
             interview: `## Interview Mode Activation
                         You are in INTERVIEW mode. Your goals:
-                        1. Ask probing questions that guide the user to deeper understanding
-                        2. Help identify architectural issues through Socratic questioning
-                        3. Explore edge cases and scalability concerns
-                        4. Reference specific design patterns when applicable
-                        5. Guide user toward best practices without direct prescription
-
-                        Question examples:
-                        - Coupling levels between components
-                        - Scalability implications
-                        - Adherence to SOLID principles
-                        - Potential anti-patterns
-                            - Alternative design approaches`,
+                        1. Gather class diagram requirements in this order: scope, entities, relationships, details, confirmation.
+                        2. Ask exactly one clarifying question per assistant response when information is missing.
+                        3. Avoid compound prompts such as multiple bullet questions, "for example" question lists, or several alternatives that all need answers.
+                        4. Show the required summary before generation.
+                        5. Generate only after explicit confirmation of a previous summary.
+                        6. Use registered tools only for generation.`,
 
             modify: `## Modification Mode Activation
                         You are in MODIFY mode. Your goals:
@@ -700,7 +739,12 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         const modeContext = commandContexts[command.type] || commandContexts['default'];
 
         const referenceInfo = this.describeReferences(request);
-        const activeDiagramInfo = this.describeActiveDiagram(request);
+        // On the confirmed generation turn, do NOT advertise the active file as the tool target — otherwise the
+        // model overwrites the open diagram instead of creating the new one described in the interview. The
+        // generation rule above tells it how to choose the target filePath.
+        const activeDiagramInfo = interviewState.confirmed
+            ? '- (Generating a new diagram — choose the target file per the generation rule above; do not overwrite the open diagram.)'
+            : this.describeActiveDiagram(request);
 
         return `${SYSTEM_PROMPT}
 
@@ -710,33 +754,212 @@ ${modeContext}
 
 ---
 
+${this.buildInterviewStateInstruction(context, interviewState)}
+
+---
+
 ## Context Information
 ${referenceInfo}
 ${activeDiagramInfo}
 
 ## Reference Handling
-All file paths shown in the Context Information above are workspace-relative. When you call any tool that takes a \`filePath\`, pass the workspace-relative path exactly as shown (e.g. \`class_diagram/Model.uml\`) — never an absolute path or one prefixed with the workspace folder name.
+All file paths shown above are workspace-relative. When you call any tool that takes a \`filePath\`, pass the workspace-relative path exactly as shown (e.g. \`class_diagram/Model.uml\`) — never an absolute path or one prefixed with the workspace folder name.
 
-When the user attaches references via chat variables such as \`#file:...\` or \`#selection\`, their content is appended to this conversation as messages labeled \`[Attached reference: <name>]\`. Treat that content as authoritative context for the user's current request, and quote element names or excerpts from it when relevant.
+When the user attaches references via chat variables such as \`#file:...\` or \`#selection\`, their content is appended to this conversation as messages labeled \`[Attached reference: <name>]\`. Treat that content as authoritative context for the user's current request.
 
-If a message labeled \`[Auto-attached active UML diagram: <path>]\` appears, the user has that diagram open in their editor. Use it as context when the user's question is about "this diagram", "the current model", or makes no other file reference. If the question is purely conceptual (e.g. "/explain what is a class diagram"), you may ignore the auto-attached content.`;
+If a message labeled \`[Auto-attached active UML diagram: <path>]\` appears, the user has that diagram open in their editor; use it as context when the request is about "this diagram" or "the current model". For a purely conceptual question (e.g. "/explain what is a class diagram"), you may ignore the auto-attached content.`;
 }
+
+
+    // --- #9 Chat references, active-editor context, and configurable model selection ---------------
+
+    /** Pick the chat model from `bigUML.ai.modelVendor`/`modelFamily` with graceful fallback to any available model. */
+    protected async selectModel(): Promise<vscode.LanguageModelChat | undefined> {
+        const config = vscode.workspace.getConfiguration('bigUML.ai');
+        const vendor = config.get<string>('modelVendor')?.trim() || 'copilot';
+        const family = config.get<string>('modelFamily')?.trim();
+
+        if (family) {
+            const requested = await vscode.lm.selectChatModels({ vendor, family });
+            if (requested.length > 0) {
+                return requested[0];
+            }
+            this.outputChannel.appendLine(
+                `[big-ai] Requested model ${vendor}/${family} not available, falling back to any ${vendor} model`
+            );
+        }
+
+        const sameVendor = await vscode.lm.selectChatModels({ vendor });
+        if (sameVendor.length > 0) {
+            return sameVendor[0];
+        }
+        const anyModel = await vscode.lm.selectChatModels();
+        return anyModel[0];
+    }
+
+    /** The active editor's `.uml` file, if any — used to attach the current diagram as implicit context. */
+    protected getActiveUmlUri(): vscode.Uri | undefined {
+        const activeTab = vscode.window.tabGroups.activeTabGroup?.activeTab;
+        if (!activeTab) {
+            return undefined;
+        }
+
+        const input = activeTab.input;
+        let uri: vscode.Uri | undefined;
+        if (input instanceof vscode.TabInputText) {
+            uri = input.uri;
+        } else if (input instanceof vscode.TabInputCustom) {
+            uri = input.uri;
+        } else if (input instanceof vscode.TabInputNotebook) {
+            uri = input.uri;
+        }
+
+        if (!uri || !uri.path.toLowerCase().endsWith('.uml')) {
+            return undefined;
+        }
+        return uri;
+    }
+
+    /** Path of a URI relative to the workspace root — the form the tools expect for their `filePath` argument. */
+    protected toWorkspaceRelative(uri: vscode.Uri): string {
+        return vscode.workspace.asRelativePath(uri, false);
+    }
+
+    /**
+     * References the user explicitly attached, excluding VS Code's implicit `vscode.*` references
+     * (e.g. `vscode.customizations.index`, which injects generic copilot custom-instructions). Those add
+     * thousands of characters of off-topic noise that derails small models like the free-tier gpt-4o-mini.
+     */
+    protected userReferences(request: vscode.ChatRequest): readonly vscode.ChatPromptReference[] {
+        return request.references.filter(ref => !ref.id.startsWith('vscode.'));
+    }
+
+    protected referenceMatchesUri(ref: vscode.ChatPromptReference, uri: vscode.Uri): boolean {
+        const v = ref.value;
+        if (v instanceof vscode.Uri) {
+            return v.toString() === uri.toString();
+        }
+        if (v instanceof vscode.Location) {
+            return v.uri.toString() === uri.toString();
+        }
+        return false;
+    }
+
+    /** Resolve #file / #selection chat references into labeled context messages. */
+    protected async buildReferenceMessages(request: vscode.ChatRequest): Promise<vscode.LanguageModelChatMessage[]> {
+        const MAX_REFERENCE_CHARS = 30_000;
+        const messages: vscode.LanguageModelChatMessage[] = [];
+
+        for (const ref of this.userReferences(request)) {
+            const label = ref.id;
+            try {
+                const resolved = await this.resolveReferenceContent(ref);
+                if (resolved === undefined) {
+                    this.outputChannel.appendLine(`[big-ai] Reference ${label}: unsupported value type, skipped`);
+                    continue;
+                }
+
+                const { content, source } = resolved;
+                const truncated = content.length > MAX_REFERENCE_CHARS;
+                const payload = truncated
+                    ? `${content.slice(0, MAX_REFERENCE_CHARS)}\n…[truncated, original length: ${content.length} chars]`
+                    : content;
+
+                this.outputChannel.appendLine(
+                    `[big-ai] Reference ${label} resolved from ${source} (${content.length} chars${truncated ? ', truncated' : ''})`
+                );
+
+                messages.push(
+                    vscode.LanguageModelChatMessage.User(
+                        `[Attached reference: ${label}${source ? ` (${source})` : ''}]\n${payload}`
+                    )
+                );
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                this.outputChannel.appendLine(`[big-ai] Reference ${label} failed to resolve: ${message}`);
+                messages.push(
+                    vscode.LanguageModelChatMessage.User(`[Attached reference: ${label}]\n(Failed to read content: ${message})`)
+                );
+            }
+        }
+
+        return messages;
+    }
+
+    protected async resolveReferenceContent(
+        ref: vscode.ChatPromptReference
+    ): Promise<{ content: string; source: string } | undefined> {
+        const { value } = ref;
+
+        if (value instanceof vscode.Uri) {
+            const bytes = await vscode.workspace.fs.readFile(value);
+            return { content: new TextDecoder().decode(bytes), source: this.toWorkspaceRelative(value) };
+        }
+
+        if (value instanceof vscode.Location) {
+            const document = await vscode.workspace.openTextDocument(value.uri);
+            return {
+                content: document.getText(value.range),
+                source: `${this.toWorkspaceRelative(value.uri)}:${value.range.start.line + 1}-${value.range.end.line + 1}`
+            };
+        }
+
+        if (typeof value === 'string') {
+            return { content: value, source: 'inline' };
+        }
+
+        return undefined;
+    }
+
+    /** Attach the active `.uml` editor as implicit context unless the user already referenced it explicitly. */
+    protected async buildAutoAttachMessages(request: vscode.ChatRequest): Promise<vscode.LanguageModelChatMessage[]> {
+        const MAX_CONTENT_CHARS = 30_000;
+        const activeUri = this.getActiveUmlUri();
+        if (!activeUri) {
+            return [];
+        }
+
+        const alreadyAttached = request.references.some(ref => this.referenceMatchesUri(ref, activeUri));
+        if (alreadyAttached) {
+            this.outputChannel.appendLine(
+                `[big-ai] Active UML file ${activeUri.fsPath} already explicitly referenced, skipping auto-attach`
+            );
+            return [];
+        }
+
+        try {
+            const bytes = await vscode.workspace.fs.readFile(activeUri);
+            const content = new TextDecoder().decode(bytes);
+            const truncated = content.length > MAX_CONTENT_CHARS;
+            const payload = truncated
+                ? `${content.slice(0, MAX_CONTENT_CHARS)}\n…[truncated, original length: ${content.length} chars]`
+                : content;
+
+            const relPath = this.toWorkspaceRelative(activeUri);
+            this.outputChannel.appendLine(
+                `[big-ai] Auto-attached active UML file ${activeUri.fsPath} (${content.length} chars${truncated ? ', truncated' : ''})`
+            );
+
+            return [
+                vscode.LanguageModelChatMessage.User(
+                    `[Auto-attached active UML diagram: ${relPath}]\n` +
+                        `When calling tools that take a filePath, pass exactly this workspace-relative path: "${relPath}".\n` +
+                        payload
+                )
+            ];
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            this.outputChannel.appendLine(`[big-ai] Failed to auto-attach active UML file: ${message}`);
+            return [];
+        }
+    }
 
     protected describeActiveDiagram(request: vscode.ChatRequest): string {
         const activeUri = this.getActiveUmlUri();
         if (!activeUri) {
             return '- No active UML diagram detected in the editor.';
         }
-        const alreadyAttached = request.references.some(ref => {
-            const v = ref.value;
-            if (v instanceof vscode.Uri) {
-                return v.toString() === activeUri.toString();
-            }
-            if (v instanceof vscode.Location) {
-                return v.uri.toString() === activeUri.toString();
-            }
-            return false;
-        });
+        const alreadyAttached = request.references.some(ref => this.referenceMatchesUri(ref, activeUri));
         const relPath = this.toWorkspaceRelative(activeUri);
         return alreadyAttached
             ? `- Active UML diagram in editor: \`${relPath}\` (also explicitly referenced). Use this workspace-relative path for tool calls.`
@@ -744,11 +967,12 @@ If a message labeled \`[Auto-attached active UML diagram: <path>]\` appears, the
     }
 
     protected describeReferences(request: vscode.ChatRequest): string {
-        if (request.references.length === 0) {
+        const references = this.userReferences(request);
+        if (references.length === 0) {
             return '- No attached references.';
         }
 
-        const lines = request.references.map(ref => {
+        const lines = references.map(ref => {
             const label = ref.id;
             const { value } = ref;
             if (value instanceof vscode.Uri) {
@@ -766,7 +990,6 @@ If a message labeled \`[Auto-attached active UML diagram: <path>]\` appears, the
 
         return `Attached references (${request.references.length}):\n${lines.join('\n')}`;
     }
-
 
     dispose(): void {
         this.participant?.dispose();
