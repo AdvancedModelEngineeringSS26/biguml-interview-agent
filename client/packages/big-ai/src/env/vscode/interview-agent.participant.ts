@@ -129,7 +129,11 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         this.outputChannel.appendLine(`[big-ai] Awaiting confirmation: ${interviewState.awaitingConfirmation}`);
         this.outputChannel.appendLine(`[big-ai] Conversation turn: ${context.history.length + 1}`);
 
-        const [model] = await vscode.lm.selectChatModels({ vendor: 'copilot' });
+        // Honor the model the user picked in the chat model dropdown. `request.model` is the model
+        // currently selected in the UI and must win; fall back to `selectChatModels` only when the
+        // request carries no model. Previously this always used the first Copilot model, so the dropdown
+        // selection was silently ignored and every request ran on Copilot's default model.
+        const model = request.model ?? (await vscode.lm.selectChatModels({ vendor: 'copilot' }))[0];
         if (!model) {
             stream.markdown('**Error**: No compatible Copilot chat model is available. Please ensure GitHub Copilot Chat is installed and authenticated.');
             return {
