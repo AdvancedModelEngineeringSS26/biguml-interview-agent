@@ -11,12 +11,19 @@ import type { OnActivate, OnDispose } from '@borkdominik-biguml/big-vscode/vscod
 import { injectable } from 'inversify';
 import * as vscode from 'vscode';
 import { AI_PARTICIPANT_ID, UML_TOOL_NAMES, COMMAND_PATTERNS, SYSTEM_PROMPT } from '../common/index.js';
-import type { GenerateClassDiagramInput, InterviewPhase, InterviewState, ParsedCommand } from '../common/tool-types.js';
+import type { GenerateClassDiagramInput, InterviewPhase, InterviewState, ParsedCommand, ProposeDiagramInput } from '../common/tool-types.js';
+import { formatProposalSummary } from './proposal-summary.js';
 import { InterviewSessionManager, type StepAdvancementSignal, type InterviewStepPolicy } from './interview-session-manager.js';
 
 const MAX_HISTORY_TURNS = 10;
 const NO_TOOL_NAMES: readonly string[] = [];
 const GENERATION_TOOL_NAMES = [UML_TOOL_NAMES.generateClassDiagram] as const;
+const INTERVIEW_TOOL_NAMES = [UML_TOOL_NAMES.readUmlFile, UML_TOOL_NAMES.proposeDiagram] as const;
+const CONFIRMATION_TOOL_NAMES = [
+    UML_TOOL_NAMES.readUmlFile,
+    UML_TOOL_NAMES.proposeDiagram,
+    UML_TOOL_NAMES.confirmGeneration
+] as const;
 const STATUS_INTENT_PATTERNS: readonly RegExp[] = [
     /\bgive\s+me\s+(a\s+)?summary\b/i,
     /\bshow\s+me\s+(the\s+)?(plan|table|steps)\b/i,
@@ -352,6 +359,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         const statusQuerySource = parsedCommand.type === 'interview' ? parsedCommand.argument : request.prompt;
         const isStatusRequest = looksLikeStatusRequest(statusQuerySource);
         const isPlanningRequest = parsedCommand.type === 'plan' || looksLikePlanningRequest(statusQuerySource);
+        const interviewState = this.deriveInterviewState(context, parsedCommand);
 
         const isBareInterview = parsedCommand.type === 'interview' && !parsedCommand.argument.trim();
         const isNewSessionRequest = parsedCommand.type === 'interview' && (!this.sessionManager.isActive || isBareInterview);
@@ -366,6 +374,9 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         this.outputChannel.appendLine(`[big-ai] Request: "${request.prompt}"`);
         this.outputChannel.appendLine(`[big-ai] Command type: ${parsedCommand.type}`);
         this.outputChannel.appendLine(`[big-ai] Session active: ${this.sessionManager.isActive}, completed: ${this.sessionManager.isCompleted}`);
+        this.outputChannel.appendLine(`[big-ai] Interview phase: ${interviewState.phase}`);
+        this.outputChannel.appendLine(`[big-ai] Awaiting confirmation: ${interviewState.awaitingConfirmation}`);
+        this.outputChannel.appendLine(`[big-ai] Conversation turn: ${context.history.length + 1}`);
 
         if (isNewSessionRequest && !isStatusRequest) {
             this.sessionManager.startNew();
@@ -510,10 +521,12 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         const stepNum = this.sessionManager.currentStepNumber;
         const isOnStep6 = this.sessionManager.isActive && stepNum === 6;
 
-        const allowedToolNames: readonly string[] = isOnStep6 ? GENERATION_TOOL_NAMES : NO_TOOL_NAMES;
+        const allowedToolNames: readonly string[] = isOnStep6
+            ? GENERATION_TOOL_NAMES
+            : !this.sessionManager.isActive
+                ? (interviewState.awaitingConfirmation ? CONFIRMATION_TOOL_NAMES : INTERVIEW_TOOL_NAMES)
+                : NO_TOOL_NAMES;
         const requireToolCalls = isOnStep6;
-
-        const interviewState = this.deriveInterviewState(context, request.prompt, parsedCommand);
 
         this.outputChannel.appendLine(`[big-ai] Step: ${stepNum}, tools: [${allowedToolNames.join(', ')}]`);
 
@@ -540,6 +553,8 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         let toolUsed = false;
         let responseStreamed = false;
         let streamedText = '';
+        let presentedProposal: ProposeDiagramInput | undefined;
+        let generated = false;
 
         try {
             let generationRetryRequested = false;
@@ -559,7 +574,6 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                 );
 
                 const toolCalls: vscode.LanguageModelToolCallPart[] = [];
-
                 for await (const part of response.stream) {
                     if (part instanceof vscode.LanguageModelTextPart) {
                         if (!requireToolCalls) {
@@ -572,7 +586,6 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                         }
                         continue;
                     }
-
                     if (part instanceof vscode.LanguageModelToolCallPart) {
                         toolCalls.push(part);
                     }
@@ -612,10 +625,50 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                     break;
                 }
 
+                // Arm: the model proposes a diagram. Render the summary deterministically and stop.
+                const proposeCall = toolCalls.find(call => call.name === UML_TOOL_NAMES.proposeDiagram);
+                if (proposeCall) {
+                    toolUsed = true;
+                    presentedProposal = proposeCall.input as ProposeDiagramInput;
+                    this.outputChannel.appendLine('[big-ai] Proposal received; rendering summary and arming gate');
+                    stream.markdown(formatProposalSummary(presentedProposal));
+                    responseStreamed = true;
+                    break;
+                }
+
+                // Fire: the model confirms. Generate from the stored proposal and stop.
+                const confirmCall = toolCalls.find(call => call.name === UML_TOOL_NAMES.confirmGeneration);
+                if (confirmCall) {
+                    toolUsed = true;
+                    const proposal = interviewState.pendingProposal;
+                    if (!proposal) {
+                        this.outputChannel.appendLine('[big-ai] Confirm called without a pending proposal');
+                        stream.markdown('**Error**: No diagram proposal is pending. Please describe the diagram so I can propose it first.');
+                        responseStreamed = true;
+                        break;
+                    }
+                    this.outputChannel.appendLine('[big-ai] Generating from stored proposal');
+                    const toolResult = await vscode.lm.invokeTool(
+                        UML_TOOL_NAMES.generateClassDiagram,
+                        {
+                            input: proposal as unknown as object,
+                            toolInvocationToken: request.toolInvocationToken
+                        },
+                        token
+                    );
+                    const resultText = this.toolResultText(toolResult);
+                    if (resultText.trim()) {
+                        stream.markdown(resultText);
+                        responseStreamed = true;
+                    }
+                    generated = true;
+                    break;
+                }
+
+                // Otherwise (e.g. read-uml-file): invoke and feed results back so the model can continue.
                 toolUsed = true;
                 this.outputChannel.appendLine(`[big-ai] Tool calls collected: ${toolCalls.length}`);
                 messages.push(vscode.LanguageModelChatMessage.Assistant(toolCalls));
-
                 for (const toolCall of toolCalls) {
                     try {
                         const toolResult = await vscode.lm.invokeTool(
@@ -649,6 +702,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
             }
         }
 
+        
         this.sessionManager.markFirstResponseSent();
 
         if (this.sessionManager.isActive && this.sessionManager.currentStepNumber === 6) {
@@ -656,7 +710,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
             this.outputChannel.appendLine('[big-ai] Interview session completed after step 6');
         }
 
-        this.outputChannel.appendLine(`[big-ai] Response complete (tool_used: ${toolUsed})`);
+        this.outputChannel.appendLine(`[big-ai] Response complete (tool_used: ${toolUsed}, armed: ${presentedProposal !== undefined}, generated: ${generated})`);
 
         return {
             metadata: {
@@ -670,7 +724,9 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                 stepAdvancedThisTurn,
                 generationConfirmedThisTurn,
                 interviewPhase: interviewState.phase,
-                awaitingConfirmation: this.sessionManager.isActive && this.sessionManager.currentStep?.definition.policy.summaryMode === 'diagram',
+                awaitingConfirmation: presentedProposal !== undefined || (this.sessionManager.isActive && this.sessionManager.currentStep?.definition.policy.summaryMode === 'diagram'),
+                proposal: presentedProposal,
+                generated,
                 generationConfirmed: isOnStep6,
                 presentedSummary: this.looksLikeGenerationSummary(streamedText)
             }
@@ -879,7 +935,6 @@ Use only confirmed information from the transcript. Include relationships after 
             throw new Error(`Invalid JSON generation input: ${error instanceof Error ? error.message : String(error)}`);
         }
     }
-
     protected toolResultText(toolResult: vscode.LanguageModelToolResult): string {
         return toolResult.content
             .filter((part): part is vscode.LanguageModelTextPart => part instanceof vscode.LanguageModelTextPart)
@@ -1045,10 +1100,10 @@ Use only confirmed information from the transcript. Include relationships after 
         return followupsByCommand[commandType] ?? followupsByCommand['default'];
     }
 
-    protected deriveInterviewState(context: vscode.ChatContext, prompt: string, command: ParsedCommand): InterviewState {
-        const confirmed = this.isConfirmationTurn(context, prompt);
-        const awaitingConfirmation = this.previousAssistantRequestedGeneration(context);
-        const phase = this.deriveInterviewPhase(context, command, awaitingConfirmation, confirmed);
+    protected deriveInterviewState(context: vscode.ChatContext, command: ParsedCommand): InterviewState {
+        const pendingProposal = this.findPendingProposal(context);
+        const awaitingConfirmation = pendingProposal !== undefined;
+        const phase = this.deriveInterviewPhase(context, command, awaitingConfirmation);
 
         return {
             phase,
@@ -1057,20 +1112,36 @@ Use only confirmed information from the transcript. Include relationships after 
             relationships: [],
             details: [],
             awaitingConfirmation,
-            confirmed
+            pendingProposal
         };
+    }
+
+    protected findPendingProposal(context: vscode.ChatContext): ProposeDiagramInput | undefined {
+        const recentHistory = context.history.slice(-MAX_HISTORY_TURNS);
+        for (const turn of [...recentHistory].reverse()) {
+            if (!(turn instanceof vscode.ChatResponseTurn)) {
+                continue;
+            }
+            const metadata = turn.result?.metadata;
+            if (!metadata) {
+                continue;
+            }
+            // The most recent decision wins: a generation disarms; a proposal arms.
+            if (metadata.generated === true) {
+                return undefined;
+            }
+            if (metadata.proposal) {
+                return metadata.proposal as ProposeDiagramInput;
+            }
+        }
+        return undefined;
     }
 
     protected deriveInterviewPhase(
         context: vscode.ChatContext,
         command: ParsedCommand,
-        awaitingConfirmation: boolean,
-        confirmed: boolean
+        awaitingConfirmation: boolean
     ): InterviewPhase {
-        if (confirmed) {
-            return 'generation';
-        }
-
         if (awaitingConfirmation) {
             return 'confirmation';
         }
@@ -1080,6 +1151,53 @@ Use only confirmed information from the transcript. Include relationships after 
         }
 
         return 'details';
+    }
+
+    protected buildInterviewStateInstruction(context: vscode.ChatContext, interviewState: InterviewState): string {
+        const session = this.sessionManager.session;
+
+        if (!session?.isActive) {
+            return this.buildLegacyInterviewStateInstruction(context, interviewState);
+        }
+
+        const stepIndex = session.currentStepIndex;
+        const step = session.steps[stepIndex];
+        const stepNumber = stepIndex + 1;
+        const isOnStep5 = stepNumber === 5;
+        const isOnStep6 = stepNumber === 6;
+
+        const toolRule = isOnStep6
+            ? 'The user confirmed the diagram on the previous turn. Call `biguml-generate-class-diagram` exactly once with ALL confirmed information from the transcript. This tool creates the .uml file and all nodes, members, and relationships in one call. Do not read the file first.'
+            : isOnStep5
+            ? 'DO NOT call any tools on this turn. Show a diagram-focused summary of what is known so far: scope, entities, classes, relationships, multiplicities, and any additional details already confirmed. Say clearly that step 5 cannot be skipped. Then ask the user to accept the summary or request a revision. Do not ask about later steps.'
+            : stepNumber === 2
+            ? 'DO NOT call any tools on this turn. Ask exactly one question about the specific class and interface names only. If the user already listed names, briefly acknowledge them and ask whether any are abstract or interfaces. Do NOT ask about relationships, multiplicities, attributes, or operations.'
+            : stepNumber === 3
+            ? 'DO NOT call any tools on this turn. Ask exactly one question about relationships between the classes only. Do NOT ask about class names, multiplicities, attributes, or operations.'
+            : stepNumber === 4
+            ? 'DO NOT call any tools on this turn. Ask exactly one question about multiplicities and any remaining attributes or operations only. Do NOT revisit scope, class names, or relationship types.'
+            : 'DO NOT call any tools on this turn. Ask exactly one question scoped to this step. Do not ask about content that belongs to a later step.';
+
+        return `## Interview Session — Step ${stepNumber} of 6
+
+**Current step**: ${step.definition.title}
+
+**Step scope instruction**: ${step.definition.scopeHint}
+
+${this.sessionManager.buildPriorStepsContext()}
+**IMPORTANT — do NOT repeat the step number or title in your response.** The extension already displays "Step ${stepNumber} of 6 — ${step.definition.title}" as a fixed header above your message. Starting your reply with a similar heading would duplicate it.
+
+**Tools this turn**: ${isOnStep6 ? '`biguml-generate-class-diagram`' : 'none'}
+
+${toolRule}
+
+## Chat History Transcript
+Use this as the source of truth for requirements collected so far. Do not invent missing information.
+If the last user message is a .uml path, treat it as the target file only — not as attribute or operation detail.
+When summarizing step 5, keep it to one compact paragraph or short bullet list and omit any file-path discussion unless the user explicitly supplied one.
+Short acknowledgements (yes, ok, sure, use those, sounds good) confirm the concrete items proposed in the immediately preceding assistant turn.
+
+${this.buildInterviewTranscript(context)}`;
     }
 
     protected isConfirmationTurn(context: vscode.ChatContext, prompt: string): boolean {
@@ -1130,73 +1248,25 @@ Use only confirmed information from the transcript. Include relationships after 
         return false;
     }
 
-    protected buildInterviewStateInstruction(context: vscode.ChatContext, interviewState: InterviewState): string {
-        const session = this.sessionManager.session;
-
-        if (!session?.isActive) {
-            return this.buildLegacyInterviewStateInstruction(context, interviewState);
-        }
-
-        const stepIndex = session.currentStepIndex;
-        const step = session.steps[stepIndex];
-        const stepNumber = stepIndex + 1;
-        const isOnStep5 = stepNumber === 5;
-        const isOnStep6 = stepNumber === 6;
-
-        const toolRule = isOnStep6
-            ? 'The user confirmed the diagram on the previous turn. Call `biguml-generate-class-diagram` exactly once with ALL confirmed information from the transcript. This tool creates the .uml file and all nodes, members, and relationships in one call. Do not read the file first.'
-            : isOnStep5
-            ? 'DO NOT call any tools on this turn. Show a diagram-focused summary of what is known so far: scope, entities, classes, relationships, multiplicities, and any additional details already confirmed. Say clearly that step 5 cannot be skipped. Then ask the user to accept the summary or request a revision. Do not ask about later steps.'
-            : stepNumber === 2
-            ? 'DO NOT call any tools on this turn. Ask exactly one question about the specific class and interface names only. If the user already listed names, briefly acknowledge them and ask whether any are abstract or interfaces. Do NOT ask about relationships, multiplicities, attributes, or operations.'
-            : stepNumber === 3
-            ? 'DO NOT call any tools on this turn. Ask exactly one question about relationships between the classes only. Do NOT ask about class names, multiplicities, attributes, or operations.'
-            : stepNumber === 4
-            ? 'DO NOT call any tools on this turn. Ask exactly one question about multiplicities and any remaining attributes or operations only. Do NOT revisit scope, class names, or relationship types.'
-            : 'DO NOT call any tools on this turn. Ask exactly one question scoped to this step. Do not ask about content that belongs to a later step.';
-
-        return `## Interview Session — Step ${stepNumber} of 6
-
-**Current step**: ${step.definition.title}
-
-**Step scope instruction**: ${step.definition.scopeHint}
-
-${this.sessionManager.buildPriorStepsContext()}
-**IMPORTANT — do NOT repeat the step number or title in your response.** The extension already displays "Step ${stepNumber} of 6 — ${step.definition.title}" as a fixed header above your message. Starting your reply with a similar heading would duplicate it.
-
-**Tools this turn**: ${isOnStep6 ? '`biguml-generate-class-diagram`' : 'none'}
-
-${toolRule}
-
-## Chat History Transcript
-Use this as the source of truth for requirements collected so far. Do not invent missing information.
-If the last user message is a .uml path, treat it as the target file only — not as attribute or operation detail.
-When summarizing step 5, keep it to one compact paragraph or short bullet list and omit any file-path discussion unless the user explicitly supplied one.
-Short acknowledgements (yes, ok, sure, use those, sounds good) confirm the concrete items proposed in the immediately preceding assistant turn.
-
-${this.buildInterviewTranscript(context)}`;
-    }
-
     protected buildLegacyInterviewStateInstruction(
         context: vscode.ChatContext,
         interviewState: InterviewState
     ): string {
-        const availableTools = interviewState.confirmed
-            ? 'generateClassDiagram only'
-            : 'readUmlFile only';
+        const availableTools = interviewState.awaitingConfirmation
+            ? 'readUmlFile, proposeDiagram, confirmGeneration'
+            : 'readUmlFile, proposeDiagram';
 
-        const generationRule = interviewState.confirmed
-            ? 'The user confirmed a complete prior summary with no missing information. Call biguml-generate-class-diagram exactly once with the complete confirmed diagram. This tool creates or replaces the target .uml file, then creates nodes, members, and relationships in deterministic order. Do not read the file first. Do not output raw UML.'
-            : 'The user has not confirmed a complete summary. Do not call createUmlFile, addNode, addClassMember, addRelation, removeNode, or removeRelation. Continue the interview by asking exactly one clear, friendly question. If you summarize, keep it short and do not mention missing information or the file path unless the user explicitly supplied one.';
+        const stateRule = interviewState.awaitingConfirmation
+            ? 'A complete proposal has already been shown to the user. If the user approves in any wording, call biguml-confirm-generation (no arguments). If the user requests any change, call biguml-propose-diagram again with the corrected specification. Otherwise answer their question or ask one clarifying question. Do not write the summary yourself.'
+            : 'No proposal has been shown yet. Continue the interview by asking exactly one clear question, or call biguml-propose-diagram once scope, entities, relationships, details, and the target .uml file are all known. Do not call biguml-confirm-generation. You may offer concrete suggestions, but label them as suggestions the user can accept or change.';
 
         return `## Interview State
 - Phase: ${interviewState.phase}
 - Diagram type: CLASS
 - Awaiting confirmation: ${interviewState.awaitingConfirmation}
-- Confirmed for generation: ${interviewState.confirmed}
 - Tools available this turn: ${availableTools}
 
-${generationRule}
+${stateRule}
 
 ## Chat History Transcript
 Use this transcript as the source of truth for requirements. Do not invent missing requirements.

@@ -36,7 +36,7 @@ export interface InterviewState {
     relationships: InterviewRelationship[];
     details: string[];
     awaitingConfirmation: boolean;
-    confirmed: boolean;
+    pendingProposal?: ProposeDiagramInput;
 }
 
 export type UmlNodeType = 'Class' | 'AbstractClass' | 'Interface' | 'Enumeration' | 'Package' | 'DataType' | 'PrimitiveType';
@@ -82,6 +82,10 @@ export interface GenerateClassDiagramInput {
     entities: GenerateClassDiagramEntityInput[];
     relationships?: GenerateClassDiagramRelationshipInput[];
 }
+
+export type ProposeDiagramInput = GenerateClassDiagramInput;
+
+export type ConfirmGenerationInput = Record<string, never>;
 
 export interface ReadUmlFileInput {
     filePath: string;
