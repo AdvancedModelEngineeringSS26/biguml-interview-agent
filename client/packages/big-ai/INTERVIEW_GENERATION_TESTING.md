@@ -1,6 +1,6 @@
 # Interview Generation Testing
 
-Use this guide to verify that `/interview` gathers enough information before it generates a UML class diagram.
+Use this guide to verify that `/interview` gathers enough information before it generates a UML class or deployment diagram.
 
 ## 1. Static Check
 
@@ -95,6 +95,20 @@ Expected behavior:
 - No generation happens yet.
 - The agent asks clarifying questions or produces a summary that requires confirmation.
 
+### Deployment Diagram
+
+Try:
+
+```text
+@biguml /interview Create a deployment diagram for a cloud system.
+```
+
+Expected behavior:
+
+- The agent asks clarifying questions about nodes (Devices, Execution Environments) and communication paths.
+- The summary should correctly identify the diagram type as `DEPLOYMENT`.
+- After confirmation, it should call `biguml-generate-deployment-diagram`.
+
 ### Unsupported Diagram Type
 
 Try:
@@ -105,7 +119,7 @@ Try:
 
 Expected behavior:
 
-- The agent explains that AI-assisted generation currently supports UML class diagrams only.
+- The agent explains that AI-assisted generation currently supports UML class and deployment diagrams only.
 
 ### Hallucination Pressure
 

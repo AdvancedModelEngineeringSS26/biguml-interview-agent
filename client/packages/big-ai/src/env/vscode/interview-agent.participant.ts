@@ -14,13 +14,17 @@ import { AI_PARTICIPANT_ID, UML_TOOL_NAMES, COMMAND_PATTERNS, SYSTEM_PROMPT } fr
 import type { InterviewPhase, InterviewState, ParsedCommand, ProposeDiagramInput } from '../common/tool-types.js';
 import { formatProposalSummary } from './proposal-summary.js';
 
-const MAX_HISTORY_TURNS = 10;
+// How far back to scan for the most recent proposal when arming the confirmation gate.
+// This is a recency bound only — it does not govern how much interview context the model sees.
+const MAX_PROPOSAL_LOOKBACK_TURNS = 10;
+// Fraction of the model's input window reserved for interview history. The remainder funds the
+// system prompt, tool schemas, the current user message, and the model's response.
+const HISTORY_TOKEN_BUDGET_FRACTION = 0.5;
+
+type HistoryTurn = vscode.ChatRequestTurn | vscode.ChatResponseTurn;
+
 const INTERVIEW_TOOL_NAMES = [UML_TOOL_NAMES.readUmlFile, UML_TOOL_NAMES.proposeDiagram] as const;
-const CONFIRMATION_TOOL_NAMES = [
-    UML_TOOL_NAMES.readUmlFile,
-    UML_TOOL_NAMES.proposeDiagram,
-    UML_TOOL_NAMES.confirmGeneration
-] as const;
+const CONFIRMATION_TOOL_NAMES = [UML_TOOL_NAMES.readUmlFile, UML_TOOL_NAMES.proposeDiagram, UML_TOOL_NAMES.confirmGeneration] as const;
 
 @injectable()
 export class InterviewAgentParticipant implements OnActivate, OnDispose {
@@ -37,7 +41,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         }
 
         this.participant = vscode.chat.createChatParticipant(AI_PARTICIPANT_ID, this.handleRequest.bind(this));
-        
+
         this.participant.followupProvider = {
             provideFollowups: this.provideFollowups.bind(this)
         };
@@ -45,19 +49,41 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         this.outputChannel.appendLine('[big-ai] Interview Agent participant registered with follow-up provider');
     }
 
+    // Select as many recent turns as fit the model's token budget, newest -> oldest, so long
+    // interviews keep their early requirements instead of being cut at a fixed turn count. History
+    // is included twice downstream (the transcript inside the system message and the role-based
+    // messages here), so each turn's cost is counted twice against the budget.
+    protected async selectHistoryWindow(
+        context: vscode.ChatContext,
+        model: vscode.LanguageModelChat
+    ): Promise<HistoryTurn[]> {
+        const budget = Math.floor(model.maxInputTokens * HISTORY_TOKEN_BUDGET_FRACTION);
+        const selected: HistoryTurn[] = [];
+        let used = 0;
 
-    protected buildHistoryMessages(context: vscode.ChatContext): vscode.LanguageModelChatMessage[] {
+        for (const turn of [...context.history].reverse()) {
+            const text = turn instanceof vscode.ChatRequestTurn ? turn.prompt : this.responseTurnText(turn);
+            const cost = (await model.countTokens(text)) * 2;
+            // Always keep at least the most recent turn, even if it alone exceeds the budget.
+            if (used + cost > budget && selected.length > 0) {
+                break;
+            }
+            used += cost;
+            selected.unshift(turn);
+        }
+
+        return selected;
+    }
+
+    protected buildHistoryMessages(history: readonly HistoryTurn[]): vscode.LanguageModelChatMessage[] {
         const messages: vscode.LanguageModelChatMessage[] = [];
-        const recentHistory = context.history.slice(-MAX_HISTORY_TURNS);
 
-        for (const turn of recentHistory) {
+        for (const turn of history) {
             if (turn instanceof vscode.ChatRequestTurn) {
                 messages.push(vscode.LanguageModelChatMessage.User(turn.prompt));
             } else if (turn instanceof vscode.ChatResponseTurn) {
                 const responseText = turn.response
-                    .filter((part): part is vscode.ChatResponseMarkdownPart =>
-                        part instanceof vscode.ChatResponseMarkdownPart
-                    )
+                    .filter((part): part is vscode.ChatResponseMarkdownPart => part instanceof vscode.ChatResponseMarkdownPart)
                     .map(part => part.value.value)
                     .join('\n');
 
@@ -69,11 +95,10 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         return messages;
     }
 
-    protected buildInterviewTranscript(context: vscode.ChatContext): string {
+    protected buildInterviewTranscript(history: readonly HistoryTurn[]): string {
         const lines: string[] = [];
-        const recentHistory = context.history.slice(-MAX_HISTORY_TURNS);
 
-        for (const turn of recentHistory) {
+        for (const turn of history) {
             if (turn instanceof vscode.ChatRequestTurn) {
                 lines.push(`User: ${turn.prompt}`);
                 continue;
@@ -92,9 +117,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
 
     protected responseTurnText(turn: vscode.ChatResponseTurn): string {
         return turn.response
-            .filter((part): part is vscode.ChatResponseMarkdownPart =>
-                part instanceof vscode.ChatResponseMarkdownPart
-            )
+            .filter((part): part is vscode.ChatResponseMarkdownPart => part instanceof vscode.ChatResponseMarkdownPart)
             .map(part => part.value.value)
             .join('\n');
     }
@@ -104,14 +127,13 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
             return command.argument.trim();
         }
         const defaults: Record<string, string> = {
-            interview: 'Please start a requirements interview for a UML class diagram.',
+            interview: 'Please start a requirements interview for a UML diagram.',
             modify: 'Please suggest improvements to the current design.',
             explain: 'Please explain the current UML structure.',
             default: request.prompt
         };
         return defaults[command.type] ?? request.prompt;
     }
-
 
     protected async handleRequest(
         request: vscode.ChatRequest,
@@ -120,7 +142,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         token: vscode.CancellationToken
     ): Promise<vscode.ChatResult> {
         const parsedCommand = this.parseCommand(request.prompt);
-        const interviewState = this.deriveInterviewState(context, parsedCommand);
+        const interviewState = this.deriveInterviewState(context, request.prompt, parsedCommand);
         const allowedToolNames = interviewState.awaitingConfirmation ? CONFIRMATION_TOOL_NAMES : INTERVIEW_TOOL_NAMES;
 
         this.outputChannel.appendLine(`[big-ai] Request: ${request.prompt}`);
@@ -131,7 +153,9 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
 
         const [model] = await vscode.lm.selectChatModels({ vendor: 'copilot' });
         if (!model) {
-            stream.markdown('**Error**: No compatible Copilot chat model is available. Please ensure GitHub Copilot Chat is installed and authenticated.');
+            stream.markdown(
+                '**Error**: No compatible Copilot chat model is available. Please ensure GitHub Copilot Chat is installed and authenticated.'
+            );
             return {
                 metadata: {
                     command: parsedCommand.type,
@@ -141,9 +165,10 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
             };
         }
 
+        const historyWindow = await this.selectHistoryWindow(context, model);
         const messages: vscode.LanguageModelChatMessage[] = [
-            vscode.LanguageModelChatMessage.User(this.buildSystemMessage(request, context, parsedCommand, interviewState)),
-            ...this.buildHistoryMessages(context),
+            vscode.LanguageModelChatMessage.User(this.buildSystemMessage(request, parsedCommand, interviewState, historyWindow)),
+            ...this.buildHistoryMessages(historyWindow),
             vscode.LanguageModelChatMessage.User(this.buildUserMessage(request, parsedCommand))
         ];
 
@@ -178,6 +203,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                 }
 
                 if (toolCalls.length === 0) {
+                    this.outputChannel.appendLine(`[big-ai] No tool calls in iteration ${iteration + 1}, completing`);
                     // Plain interview turn: the model asked a question or answered. Text already streamed.
                     break;
                 }
@@ -205,8 +231,12 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                         break;
                     }
                     this.outputChannel.appendLine('[big-ai] Generating from stored proposal');
+                    const generationTool =
+                        proposal.diagramType === 'DEPLOYMENT'
+                            ? UML_TOOL_NAMES.generateDeploymentDiagram
+                            : UML_TOOL_NAMES.generateClassDiagram;
                     const toolResult = await vscode.lm.invokeTool(
-                        UML_TOOL_NAMES.generateClassDiagram,
+                        generationTool,
                         {
                             input: proposal as unknown as object,
                             toolInvocationToken: request.toolInvocationToken
@@ -372,7 +402,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
             ],
             default: [
                 {
-                    prompt: '/interview Let\'s analyze this design',
+                    prompt: "/interview Let's analyze this design",
                     label: 'Deep dive'
                 },
                 {
@@ -389,14 +419,15 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         return followupsByCommand[commandType] || followupsByCommand['default'];
     }
 
-    protected deriveInterviewState(context: vscode.ChatContext, command: ParsedCommand): InterviewState {
+    protected deriveInterviewState(context: vscode.ChatContext, prompt: string, command: ParsedCommand): InterviewState {
         const pendingProposal = this.findPendingProposal(context);
         const awaitingConfirmation = pendingProposal !== undefined;
         const phase = this.deriveInterviewPhase(context, command, awaitingConfirmation);
+        const diagramType = pendingProposal?.diagramType ?? this.deriveDiagramType(context, prompt, command);
 
         return {
             phase,
-            diagramType: 'CLASS',
+            diagramType,
             entities: [],
             relationships: [],
             details: [],
@@ -406,7 +437,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
     }
 
     protected findPendingProposal(context: vscode.ChatContext): ProposeDiagramInput | undefined {
-        const recentHistory = context.history.slice(-MAX_HISTORY_TURNS);
+        const recentHistory = context.history.slice(-MAX_PROPOSAL_LOOKBACK_TURNS);
         for (const turn of [...recentHistory].reverse()) {
             if (!(turn instanceof vscode.ChatResponseTurn)) {
                 continue;
@@ -426,6 +457,39 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         return undefined;
     }
 
+    protected deriveDiagramType(
+        context: vscode.ChatContext,
+        prompt: string,
+        command: ParsedCommand
+    ): 'CLASS' | 'DEPLOYMENT' {
+        if (this.isDeploymentIntent(prompt) || (command.type === 'interview' && this.isDeploymentIntent(command.argument))) {
+            return 'DEPLOYMENT';
+        }
+
+        const history = [...context.history].reverse();
+        for (const turn of history) {
+            let text = '';
+            if (turn instanceof vscode.ChatRequestTurn) {
+                text = turn.prompt;
+            } else if (turn instanceof vscode.ChatResponseTurn) {
+                text = this.responseTurnText(turn);
+            }
+
+            if (this.isDeploymentIntent(text)) {
+                return 'DEPLOYMENT';
+            }
+            if (/\bclass\b/i.test(text)) {
+                return 'CLASS';
+            }
+        }
+
+        return 'CLASS';
+    }
+
+    protected isDeploymentIntent(text: string): boolean {
+        return /\b(deployment|device|execution\s*environment|communication\s*path)\b/i.test(text);
+    }
+
     protected deriveInterviewPhase(
         context: vscode.ChatContext,
         command: ParsedCommand,
@@ -442,7 +506,10 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         return 'details';
     }
 
-    protected buildInterviewStateInstruction(context: vscode.ChatContext, interviewState: InterviewState): string {
+    protected buildInterviewStateInstruction(
+        interviewState: InterviewState,
+        history: readonly HistoryTurn[]
+    ): string {
         const availableTools = interviewState.awaitingConfirmation
             ? 'readUmlFile, proposeDiagram, confirmGeneration'
             : 'readUmlFile, proposeDiagram';
@@ -453,7 +520,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
 
         return `## Interview State
 - Phase: ${interviewState.phase}
-- Diagram type: CLASS
+- Diagram type: ${interviewState.diagramType}
 - Awaiting confirmation: ${interviewState.awaitingConfirmation}
 - Tools available this turn: ${availableTools}
 
@@ -465,19 +532,19 @@ If the last user message is a .uml path, treat it as the target diagram file, no
 Only generate attributes or operations that the user explicitly named, explicitly accepted from the previous assistant suggestion, or explicitly requested no details.
 Short acknowledgements such as yes, ok, sure, use those, that works, and sounds good confirm the concrete items suggested in the immediately previous assistant turn.
 
-${this.buildInterviewTranscript(context)}`;
+${this.buildInterviewTranscript(history)}`;
     }
 
     protected buildSystemMessage(
         request: vscode.ChatRequest,
-        context: vscode.ChatContext,
         command: ParsedCommand,
-        interviewState: InterviewState
+        interviewState: InterviewState,
+        history: readonly HistoryTurn[]
     ): string {
         const commandContexts = {
             interview: `## Interview Mode Activation
                         You are in INTERVIEW mode. Your goals:
-                        1. Gather class diagram requirements in this order: scope, entities, relationships, details, confirmation.
+                        1. Gather ${interviewState.diagramType.toLowerCase()} diagram requirements in this order: scope, entities, relationships, details, confirmation.
                         2. Ask exactly one clarifying question per assistant response when information is missing.
                         3. Avoid compound prompts such as multiple bullet questions, "for example" question lists, or several alternatives that all need answers.
                         4. When scope, entities, relationships, details, and the target .uml file are all known, call biguml-propose-diagram with the complete specification. Do not hand-write the summary; the tool renders it.
@@ -516,14 +583,15 @@ ${this.buildInterviewTranscript(context)}`;
             default: `## General Conversation Mode
                         Respond helpfully to UML-related questions while maintaining expert-level knowledge.
                         Proactively offer to dive deeper using /interview, /modify, or /explain modes.`
-                                };
+        };
 
         const modeContext = commandContexts[command.type] || commandContexts['default'];
-        
-        const referenceInfo = request.references.length > 0 
-            ? `Attached references: ${request.references.length} file(s) or context available for analysis.`
-            : 'No attached references.';
-        
+
+        const referenceInfo =
+            request.references.length > 0
+                ? `Attached references: ${request.references.length} file(s) or context available for analysis.`
+                : 'No attached references.';
+
         return `${SYSTEM_PROMPT}
 
 ---
@@ -532,14 +600,13 @@ ${modeContext}
 
 ---
 
-${this.buildInterviewStateInstruction(context, interviewState)}
+${this.buildInterviewStateInstruction(interviewState, history)}
 
 ---
 
 ## Context Information
 - ${referenceInfo}`;
-}
-
+    }
 
     dispose(): void {
         this.participant?.dispose();

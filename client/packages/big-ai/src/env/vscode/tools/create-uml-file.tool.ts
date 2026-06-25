@@ -29,8 +29,8 @@ export class CreateUmlFileTool implements vscode.LanguageModelTool<CreateUmlFile
 
         let uri: vscode.Uri;
         try {
-            if (diagramType !== 'CLASS') {
-                throw new Error('diagramType must be CLASS.');
+            if (diagramType !== 'CLASS' && diagramType !== 'DEPLOYMENT') {
+                throw new Error('diagramType must be CLASS or DEPLOYMENT.');
             }
             const requestedPath = validateRequiredString(filePath, 'filePath');
             const normalized = requestedPath.toLowerCase().endsWith('.uml') ? requestedPath : `${requestedPath}.uml`;
@@ -46,7 +46,7 @@ export class CreateUmlFileTool implements vscode.LanguageModelTool<CreateUmlFile
             // File does not exist — proceed
         }
 
-        const content = stringifyUmlDiagramFile(emptyUmlDiagramFile());
+        const content = stringifyUmlDiagramFile(emptyUmlDiagramFile(diagramType));
         await vscode.workspace.fs.writeFile(uri, Buffer.from(content, 'utf-8'));
 
         this.outputChannel.appendLine(`[big-ai] Created UML file: ${uri.fsPath}`);
