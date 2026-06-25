@@ -10,6 +10,7 @@
 import { createUmlDiagramServices } from '@borkdominik-biguml/uml-model-server';
 import { NodeFileSystem } from 'langium/node';
 import { URI } from 'vscode-uri';
+import type { DiagramType } from '../../common/index.js';
 
 type UmlRecord = Record<string, unknown>;
 type MutableUmlRecord = Record<string, unknown>;
@@ -20,12 +21,18 @@ interface PendingReference extends UmlRecord {
 
 const services = createUmlDiagramServices(NodeFileSystem);
 
-export function emptyUmlDiagramFile(): UmlRecord {
+const DIAGRAM_ROOT: Record<DiagramType, { __type: string; __id: string }> = {
+    CLASS: { __type: 'ClassDiagram', __id: 'ClassDiagram1' },
+    DEPLOYMENT: { __type: 'DeploymentDiagram', __id: 'DeploymentDiagram1' }
+};
+
+export function emptyUmlDiagramFile(diagramType: DiagramType = 'CLASS'): UmlRecord {
+    const root = DIAGRAM_ROOT[diagramType];
     return {
         diagram: {
-            __type: 'ClassDiagram',
-            __id: 'ClassDiagram1',
-            diagramType: 'CLASS',
+            __type: root.__type,
+            __id: root.__id,
+            diagramType,
             entities: [],
             relations: []
         },
