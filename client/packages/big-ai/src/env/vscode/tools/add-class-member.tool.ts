@@ -8,11 +8,10 @@
  *********************************************************************************/
 
 import { OutputChannel } from '@borkdominik-biguml/big-vscode/vscode';
-import { randomUUID } from 'crypto';
 import { inject, injectable } from 'inversify';
 import * as vscode from 'vscode';
 import type { AddClassMemberInput, UmlClassMemberKind, UmlVisibility } from '../../common/index.js';
-import { createToolResult, resolveWorkspacePath, validateRequiredString, validateUmlDiagramFile } from './tool-utils.js';
+import { createToolResult, generateId, resolveWorkspacePath, toParserSafeMultiplicity, validateRequiredString, validateUmlDiagramFile } from './tool-utils.js';
 import { stringifyUmlDiagramFile } from './uml-file-format.js';
 
 interface UmlNode {
@@ -191,11 +190,6 @@ function isNamedMember(value: unknown, name: string): boolean {
     return typeof value === 'object' && value !== null && 'name' in value && value.name === name;
 }
 
-function generateId(): string {
-    const uuid = randomUUID();
-    return `a${uuid.substring(1)}`;
-}
-
 function ensureOwnerHasVisibleMemberArea(diagram: UmlDiagramFile, owner: UmlNode): void {
     const size = diagram.metaInfos.find(meta => meta.__type === 'Size' && meta.element?.__value === owner.__id);
     if (!size) {
@@ -265,28 +259,6 @@ function estimateOwnerWidth(owner: UmlNode): number {
 
 function memberLabel(member: UmlClassMember): string {
     return member.__type === 'Operation' ? `${member.name}()` : member.name;
-}
-
-function toParserSafeMultiplicity(value: string): string | undefined {
-    const trimmed = value.trim();
-    if (trimmed === '*') {
-        return trimmed;
-    }
-    if (/^[a-zA-Z_][\w-]*$/.test(trimmed)) {
-        return trimmed;
-    }
-    switch (trimmed) {
-        case '1':
-            return 'one';
-        case '0..1':
-            return 'zeroToOne';
-        case '0..*':
-            return '*';
-        case '1..*':
-            return 'oneToMany';
-        default:
-            return undefined;
-    }
 }
 
 function toParserSafeMemberName(value: string): string {
