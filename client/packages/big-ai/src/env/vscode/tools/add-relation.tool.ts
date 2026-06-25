@@ -107,7 +107,7 @@ export class AddRelationTool implements vscode.LanguageModelTool<AddRelationInpu
             return createToolResult(`Added ${relationType} from "${sourceElementName}" to "${targetElementName}" in ${filePath}`);
         }
 
-        // Fallback: write directly to file (diagram not open)
+        // Fallback: write directly to file (diagram ngit add ../.gitattributesot open)
         const relation = buildRelationRecord({
             relationType,
             sourceId: sourceNode.__id,

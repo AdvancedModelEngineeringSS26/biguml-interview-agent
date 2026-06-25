@@ -41,12 +41,10 @@ interface UmlDiagramFile {
     metaInfos: MetaInfo[];
 }
 
-// Element types that have a visual position/size in the diagram
 const BOUNDED_TYPES = new Set<UmlNodeType>([
     'Class', 'AbstractClass', 'Interface', 'Enumeration', 'Package', 'DataType', 'PrimitiveType'
 ]);
 
-// Mapping from UmlNodeType to GLSP element type IDs
 const NODE_TYPE_ID: Record<UmlNodeType, string> = {
     Class: 'class__Class',
     AbstractClass: 'class__AbstractClass',
@@ -106,14 +104,12 @@ export class AddNodeTool implements vscode.LanguageModelTool<AddNodeInput> {
             return createToolResult(`Error: An element named "${elementName}" already exists in the diagram.`);
         }
 
-        // Compute position for the new node
         const positionCount = diagram.metaInfos.filter(m => m.__type === 'Position').length;
         const col = positionCount % 4;
         const row = Math.floor(positionCount / 4);
         const x = 50 + col * 220;
         const y = 50 + row * 160;
 
-        // Try GLSP operation first so the diagram updates immediately
         if (BOUNDED_TYPES.has(elementType)) {
             const elementTypeId = NODE_TYPE_ID[elementType];
             const glspSuccess = await vscode.commands.executeCommand<boolean>(
@@ -125,7 +121,6 @@ export class AddNodeTool implements vscode.LanguageModelTool<AddNodeInput> {
             }
         }
 
-        // Fallback: write directly to file (diagram not open or unbounded type)
         const id = generateId();
         const node = buildNode(elementType, id, elementName, properties);
         diagram.diagram.entities.push(node);
