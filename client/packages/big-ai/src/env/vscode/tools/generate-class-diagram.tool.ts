@@ -143,10 +143,21 @@ export class GenerateClassDiagramTool implements vscode.LanguageModelTool<Genera
             return createToolResult(`Error: ${e instanceof Error ? e.message : String(e)}`);
         }
 
+        const declaredNames = new Set(input.entities.map(entity => entity.name));
+        const inferredClasses = diagram.diagram.entities
+            .filter(node => node.__type === 'Class' && !declaredNames.has(node.name))
+            .map(node => node.name);
+
         this.outputChannel.appendLine(
             `[big-ai] Generated class diagram: ${uri.fsPath} (${input.entities.length} entities, ${input.relationships?.length ?? 0} relationships)`
         );
-        return createToolResult(`Generated UML class diagram at ${uri.fsPath}`);
+        const baseMessage = `Generated UML class diagram at ${uri.fsPath}`;
+        const message =
+            inferredClasses.length === 0
+                ? baseMessage
+                : `${baseMessage}. Auto-created ${inferredClasses.length} undeclared ` +
+                  `type${inferredClasses.length === 1 ? '' : 's'} referenced by a property: ${inferredClasses.join(', ')}.`;
+        return createToolResult(message);
     }
 }
 
@@ -268,9 +279,6 @@ function addProperty(
     if (property.typeName !== undefined) {
         const typeName = validateRequiredString(property.typeName, 'property.typeName');
         const typeNode = findOrCreateTypeNode(diagram, nodesByName, typeName);
-        if (!typeNode) {
-            throw new Error(`No type named "${typeName}" found for property "${property.name}".`);
-        }
         member.propertyType = { __type: 'Reference', __refType: 'DataTypeReference', __value: typeNode.__id };
     }
     owner.properties.push(member);
@@ -291,14 +299,15 @@ function addOperation(
     });
 }
 
-function findOrCreateTypeNode(diagram: UmlDiagramFile, nodesByName: Map<string, UmlNode>, typeName: string): UmlNode | undefined {
+function findOrCreateTypeNode(diagram: UmlDiagramFile, nodesByName: Map<string, UmlNode>, typeName: string): UmlNode {
     const existing = nodesByName.get(typeName);
-    if (existing || !COMMON_PRIMITIVE_TYPES.has(typeName)) {
+    if (existing) {
         return existing;
     }
-    const primitive = addNode(diagram, { name: typeName, elementType: 'PrimitiveType' });
-    nodesByName.set(typeName, primitive);
-    return primitive;
+    const elementType: UmlNodeType = COMMON_PRIMITIVE_TYPES.has(typeName) ? 'PrimitiveType' : 'Class';
+    const created = addNode(diagram, { name: typeName, elementType });
+    nodesByName.set(typeName, created);
+    return created;
 }
 
 function addRelationship(
