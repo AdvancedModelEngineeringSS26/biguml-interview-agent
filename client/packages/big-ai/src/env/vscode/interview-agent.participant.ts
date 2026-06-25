@@ -480,9 +480,9 @@ ${this.buildInterviewTranscript(context)}`;
                         1. Gather class diagram requirements in this order: scope, entities, relationships, details, confirmation.
                         2. Ask exactly one clarifying question per assistant response when information is missing.
                         3. Avoid compound prompts such as multiple bullet questions, "for example" question lists, or several alternatives that all need answers.
-                        4. Show the required summary before generation.
-                        5. Generate only after explicit confirmation of a previous summary.
-                        6. Use registered tools only for generation.`,
+                        4. When scope, entities, relationships, details, and the target .uml file are all known, call biguml-propose-diagram with the complete specification. Do not hand-write the summary; the tool renders it.
+                        5. After a proposal is shown, call biguml-confirm-generation when the user approves in any wording, or call biguml-propose-diagram again if they request changes.
+                        6. Generate only through these tools; never write raw UML, JSON, or a summary yourself.`,
 
             modify: `## Modification Mode Activation
                         You are in MODIFY mode. Your goals:
