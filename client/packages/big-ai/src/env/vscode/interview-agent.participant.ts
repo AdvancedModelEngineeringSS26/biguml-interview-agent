@@ -14,7 +14,15 @@ import { AI_PARTICIPANT_ID, UML_TOOL_NAMES, COMMAND_PATTERNS, SYSTEM_PROMPT } fr
 import type { InterviewPhase, InterviewState, ParsedCommand, ProposeDiagramInput } from '../common/tool-types.js';
 import { formatProposalSummary } from './proposal-summary.js';
 
-const MAX_HISTORY_TURNS = 10;
+// How far back to scan for the most recent proposal when arming the confirmation gate.
+// This is a recency bound only — it does not govern how much interview context the model sees.
+const MAX_PROPOSAL_LOOKBACK_TURNS = 10;
+// Fraction of the model's input window reserved for interview history. The remainder funds the
+// system prompt, tool schemas, the current user message, and the model's response.
+const HISTORY_TOKEN_BUDGET_FRACTION = 0.5;
+
+type HistoryTurn = vscode.ChatRequestTurn | vscode.ChatResponseTurn;
+
 const INTERVIEW_TOOL_NAMES = [UML_TOOL_NAMES.readUmlFile, UML_TOOL_NAMES.proposeDiagram] as const;
 const CONFIRMATION_TOOL_NAMES = [UML_TOOL_NAMES.readUmlFile, UML_TOOL_NAMES.proposeDiagram, UML_TOOL_NAMES.confirmGeneration] as const;
 
@@ -41,11 +49,36 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         this.outputChannel.appendLine('[big-ai] Interview Agent participant registered with follow-up provider');
     }
 
-    protected buildHistoryMessages(context: vscode.ChatContext): vscode.LanguageModelChatMessage[] {
-        const messages: vscode.LanguageModelChatMessage[] = [];
-        const recentHistory = context.history.slice(-MAX_HISTORY_TURNS);
+    // Select as many recent turns as fit the model's token budget, newest -> oldest, so long
+    // interviews keep their early requirements instead of being cut at a fixed turn count. History
+    // is included twice downstream (the transcript inside the system message and the role-based
+    // messages here), so each turn's cost is counted twice against the budget.
+    protected async selectHistoryWindow(
+        context: vscode.ChatContext,
+        model: vscode.LanguageModelChat
+    ): Promise<HistoryTurn[]> {
+        const budget = Math.floor(model.maxInputTokens * HISTORY_TOKEN_BUDGET_FRACTION);
+        const selected: HistoryTurn[] = [];
+        let used = 0;
 
-        for (const turn of recentHistory) {
+        for (const turn of [...context.history].reverse()) {
+            const text = turn instanceof vscode.ChatRequestTurn ? turn.prompt : this.responseTurnText(turn);
+            const cost = (await model.countTokens(text)) * 2;
+            // Always keep at least the most recent turn, even if it alone exceeds the budget.
+            if (used + cost > budget && selected.length > 0) {
+                break;
+            }
+            used += cost;
+            selected.unshift(turn);
+        }
+
+        return selected;
+    }
+
+    protected buildHistoryMessages(history: readonly HistoryTurn[]): vscode.LanguageModelChatMessage[] {
+        const messages: vscode.LanguageModelChatMessage[] = [];
+
+        for (const turn of history) {
             if (turn instanceof vscode.ChatRequestTurn) {
                 messages.push(vscode.LanguageModelChatMessage.User(turn.prompt));
             } else if (turn instanceof vscode.ChatResponseTurn) {
@@ -62,11 +95,10 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         return messages;
     }
 
-    protected buildInterviewTranscript(context: vscode.ChatContext): string {
+    protected buildInterviewTranscript(history: readonly HistoryTurn[]): string {
         const lines: string[] = [];
-        const recentHistory = context.history.slice(-MAX_HISTORY_TURNS);
 
-        for (const turn of recentHistory) {
+        for (const turn of history) {
             if (turn instanceof vscode.ChatRequestTurn) {
                 lines.push(`User: ${turn.prompt}`);
                 continue;
@@ -133,9 +165,10 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
             };
         }
 
+        const historyWindow = await this.selectHistoryWindow(context, model);
         const messages: vscode.LanguageModelChatMessage[] = [
-            vscode.LanguageModelChatMessage.User(this.buildSystemMessage(request, context, parsedCommand, interviewState)),
-            ...this.buildHistoryMessages(context),
+            vscode.LanguageModelChatMessage.User(this.buildSystemMessage(request, parsedCommand, interviewState, historyWindow)),
+            ...this.buildHistoryMessages(historyWindow),
             vscode.LanguageModelChatMessage.User(this.buildUserMessage(request, parsedCommand))
         ];
 
@@ -404,7 +437,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
     }
 
     protected findPendingProposal(context: vscode.ChatContext): ProposeDiagramInput | undefined {
-        const recentHistory = context.history.slice(-MAX_HISTORY_TURNS);
+        const recentHistory = context.history.slice(-MAX_PROPOSAL_LOOKBACK_TURNS);
         for (const turn of [...recentHistory].reverse()) {
             if (!(turn instanceof vscode.ChatResponseTurn)) {
                 continue;
@@ -473,7 +506,10 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         return 'details';
     }
 
-    protected buildInterviewStateInstruction(context: vscode.ChatContext, interviewState: InterviewState): string {
+    protected buildInterviewStateInstruction(
+        interviewState: InterviewState,
+        history: readonly HistoryTurn[]
+    ): string {
         const availableTools = interviewState.awaitingConfirmation
             ? 'readUmlFile, proposeDiagram, confirmGeneration'
             : 'readUmlFile, proposeDiagram';
@@ -496,14 +532,14 @@ If the last user message is a .uml path, treat it as the target diagram file, no
 Only generate attributes or operations that the user explicitly named, explicitly accepted from the previous assistant suggestion, or explicitly requested no details.
 Short acknowledgements such as yes, ok, sure, use those, that works, and sounds good confirm the concrete items suggested in the immediately previous assistant turn.
 
-${this.buildInterviewTranscript(context)}`;
+${this.buildInterviewTranscript(history)}`;
     }
 
     protected buildSystemMessage(
         request: vscode.ChatRequest,
-        context: vscode.ChatContext,
         command: ParsedCommand,
-        interviewState: InterviewState
+        interviewState: InterviewState,
+        history: readonly HistoryTurn[]
     ): string {
         const commandContexts = {
             interview: `## Interview Mode Activation
@@ -564,7 +600,7 @@ ${modeContext}
 
 ---
 
-${this.buildInterviewStateInstruction(context, interviewState)}
+${this.buildInterviewStateInstruction(interviewState, history)}
 
 ---
 
