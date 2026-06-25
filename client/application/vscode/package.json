@@ -399,6 +399,173 @@
         }
       },
       {
+        "name": "biguml-propose-diagram",
+        "displayName": "Propose UML Diagram",
+        "modelDescription": "Presents the complete proposed class diagram to the user for confirmation. Call this once every requirement (scope, entities, relationships, details, target .uml file) is known. The extension renders the summary from this input — do not write the summary yourself. This does not modify any file.",
+        "canBeReferencedInPrompt": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "filePath": {
+              "type": "string",
+              "description": "Workspace-relative path for the proposed .uml file"
+            },
+            "diagramType": {
+              "type": "string",
+              "enum": [
+                "CLASS"
+              ],
+              "description": "The type of UML diagram to generate"
+            },
+            "entities": {
+              "type": "array",
+              "description": "All confirmed class diagram entities. Include properties and operations under their owning entity.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "Entity name"
+                  },
+                  "elementType": {
+                    "type": "string",
+                    "enum": [
+                      "Class",
+                      "AbstractClass",
+                      "Interface",
+                      "Enumeration",
+                      "Package",
+                      "DataType",
+                      "PrimitiveType"
+                    ],
+                    "description": "UML element type"
+                  },
+                  "properties": {
+                    "type": "array",
+                    "description": "Confirmed attributes/properties for this entity",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string"
+                        },
+                        "typeName": {
+                          "type": "string"
+                        },
+                        "multiplicity": {
+                          "type": "string"
+                        },
+                        "visibility": {
+                          "type": "string",
+                          "enum": [
+                            "PUBLIC",
+                            "PRIVATE",
+                            "PROTECTED",
+                            "PACKAGE"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "name"
+                      ]
+                    }
+                  },
+                  "operations": {
+                    "type": "array",
+                    "description": "Confirmed operations/methods for this entity",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string"
+                        },
+                        "visibility": {
+                          "type": "string",
+                          "enum": [
+                            "PUBLIC",
+                            "PRIVATE",
+                            "PROTECTED",
+                            "PACKAGE"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "name"
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "name",
+                  "elementType"
+                ]
+              }
+            },
+            "relationships": {
+              "type": "array",
+              "description": "All confirmed relationships between proposed entities.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "relationType": {
+                    "type": "string",
+                    "enum": [
+                      "Association",
+                      "Aggregation",
+                      "Composition",
+                      "Abstraction",
+                      "Dependency",
+                      "Generalization",
+                      "InterfaceRealization",
+                      "PackageImport",
+                      "PackageMerge",
+                      "Realization",
+                      "Substitution",
+                      "Usage"
+                    ]
+                  },
+                  "sourceName": {
+                    "type": "string"
+                  },
+                  "targetName": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "sourceMultiplicity": {
+                    "type": "string"
+                  },
+                  "targetMultiplicity": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "relationType",
+                  "sourceName",
+                  "targetName"
+                ]
+              }
+            }
+          },
+          "required": [
+            "filePath",
+            "diagramType",
+            "entities"
+          ]
+        }
+      },
+      {
+        "name": "biguml-confirm-generation",
+        "displayName": "Confirm Diagram Generation",
+        "modelDescription": "Confirms the previously proposed diagram and triggers generation from the stored proposal. Call this only after a proposal has been shown and the user approves, in any wording. Takes no arguments.",
+        "canBeReferencedInPrompt": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
         "name": "biguml-create-uml-file",
         "displayName": "Create UML File",
         "modelDescription": "Creates a new empty UML file at the specified path with a given diagram type. Use this when the user wants to start a new diagram.",
