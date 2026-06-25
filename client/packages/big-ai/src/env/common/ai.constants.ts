@@ -14,6 +14,8 @@ export const AI_PARTICIPANT_FULL_NAME = 'bigUML Interview Agent';
 export const UML_TOOL_NAMES = {
     dummy: 'biguml-dummy-tool',
     generateClassDiagram: 'biguml-generate-class-diagram',
+    proposeDiagram: 'biguml-propose-diagram',
+    confirmGeneration: 'biguml-confirm-generation',
     generateDeploymentDiagram: 'biguml-generate-deployment-diagram',
     createUmlFile: 'biguml-create-uml-file',
     readUmlFile: 'biguml-read-uml-file',
@@ -97,7 +99,8 @@ When a user uses /explain, provide clear, educational explanations of UML concep
 - On a confirmed generation turn, create every confirmed node, member, and relationship from the summary
 - On a confirmed generation turn, your response must consist of that single tool call only; do not read the target file first and do not write @startuml, class blocks, relationship notation, JSON, or code fences
 - Do not invent elements that the user has not provided or confirmed
-- If the user asks for unsupported diagram types, explain that AI-assisted generation currently supports UML class and deployment diagrams only
+- Do not hand-write the summary or the final diagram. Generation is tool-driven — follow the "Generation Protocol" section below
+- If the user asks for unsupported diagram types, explain that AI-assisted generation currently supports UML class diagrams only
 
 ## Output Expectations
 - Each response should be self-contained and valuable
@@ -118,24 +121,17 @@ Relation types: CommunicationPath, Deployment, Dependency, Generalization, Manif
 
 If the user implies an unsupported element, ask a clarifying question or state the closest supported mapping in the summary before generation.
 
-## Summary Required Before Generation
-Before any generation, show this confirmation summary only after scope, entities, relationships, details, and target diagram file are known.
-If details were not provided, ask whether to add any or leave them empty before showing this summary:
-
-Summary
-- Diagram type:
-- Diagram file:
-- Scope:
-- Entities:
-- Relationships:
-- Details:
-- Assumptions:
-- Missing information: none
-
-Reply "generate" to create the diagram, or provide corrections.
-
-If information is still missing, do not show the final generation confirmation. Ask exactly one question for the next missing item instead.
-If the user accepts a previous assistant suggestion with a short acknowledgement, include the accepted suggestion in the summary rather than asking for the same information again.
+## Generation Protocol (tool-driven)
+Generation is driven entirely by two tools. You never write the summary or the diagram yourself.
+- Ask for any missing item first. Only when scope, entities, relationships, details, and the target .uml file are all known, call the biguml-propose-diagram tool with the complete class diagram specification (filePath, diagramType "CLASS", entities with their properties and operations, and relationships). The extension renders the summary for the user from your tool input.
+- If attributes and operations were not provided, ask whether to add any or leave them empty before calling biguml-propose-diagram.
+- On a turn where you call biguml-propose-diagram, your response must consist of that single tool call only: no summary text, no prose, no JSON, no code fences.
+- After a proposal has been shown, choose based on the user's latest reply, in any wording:
+  - The user approves (for example: generate, yes, looks good, go ahead, ship it): call biguml-confirm-generation. It takes no arguments. Your response must be that single tool call only.
+  - The user requests any change: call biguml-propose-diagram again with the corrected specification.
+  - The user asks a question, or information is still missing: answer it or ask exactly one clarifying question; do not call a tool.
+- Never call biguml-confirm-generation before a proposal has been shown in the conversation.
+- Do not invent classes, attributes, operations, relationships, multiplicities, or files that the user has not provided or confirmed.
 
 ## Few-Shot Interview Example
 User: Create a UML diagram for a library system.
@@ -151,42 +147,10 @@ User: workspace/library_borrowing.uml
 Assistant: Should any attributes or operations be added, or should the classes stay empty?
 
 User: title and isbn.
-Assistant: Summary
-- Diagram file: workspace/library_borrowing.uml
-- Scope: library borrowing
-- Entities: Member, Loan, Book
-- Relationships: Member 1 -> many Loan; Loan many -> 1 Book
-- Details: Book has title and isbn
-- Assumptions: UML class diagram
-- Missing information: none
+Assistant: [calls biguml-propose-diagram with filePath workspace/library_borrowing.uml, diagramType CLASS, entities Member/Loan/Book where Book has properties title and isbn, and relationships Member 1 -> many Loan and Loan many -> 1 Book; no other text]
 
-Reply "generate" to create the diagram, or provide corrections.
-
-User: generate.
-Assistant: Uses registered tools only.
-
-User: Create a UML deployment diagram for a web app.
-Assistant: Before generating, I need the scope. Should this deployment diagram focus on the production environment?
-
-User: Yes, production. We have a Web Server, Database Server, and an Application Artifact.
-Assistant: How do the Web Server and Database Server communicate?
-
-User: via HTTPS.
-Assistant: What target .uml file path should I create?
-
-User: workspace/webapp_deployment.uml
-Assistant: Summary
-- Diagram file: workspace/webapp_deployment.uml
-- Scope: web app production environment
-- Entities: Web Server (Device), Database Server (Device), Application Artifact (Artifact)
-- Relationships: Web Server --HTTPS--> Database Server
-- Assumptions: UML deployment diagram
-- Missing information: none
-
-Reply "generate" to create the diagram, or provide corrections.
-
-User: generate.
-Assistant: Uses registered tools only.`;
+User: looks good.
+Assistant: [calls biguml-confirm-generation with no arguments; no other text]`;
 
 export const COMMAND_PATTERNS = {
   interview: /^\/interview\s*(.*)?/i,
