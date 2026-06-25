@@ -8,7 +8,6 @@
  *********************************************************************************/
 
 import { OutputChannel } from '@borkdominik-biguml/big-vscode/vscode';
-import { randomUUID } from 'crypto';
 import { inject, injectable } from 'inversify';
 import * as vscode from 'vscode';
 import type {
@@ -19,7 +18,8 @@ import type {
     UmlRelationType,
     UmlVisibility
 } from '../../common/index.js';
-import { createToolResult, resolveWorkspacePath, validateRequiredString } from './tool-utils.js';
+import { buildRelationRecord } from './relation-serialization.js';
+import { createToolResult, generateId, ref, resolveWorkspacePath, toParserSafeMultiplicity, validateRequiredString } from './tool-utils.js';
 import { stringifyUmlDiagramFile } from './uml-file-format.js';
 
 interface UmlNode {
@@ -65,32 +65,12 @@ const RELATION_TYPES = new Set<UmlRelationType>([
 const VISIBILITIES = new Set<UmlVisibility>(['PUBLIC', 'PRIVATE', 'PROTECTED', 'PACKAGE']);
 const COMMON_PRIMITIVE_TYPES = new Set(['String', 'Date', 'Boolean', 'Integer', 'int', 'float', 'double', 'Number', 'Money']);
 const BOUNDED_TYPES = new Set<UmlNodeType>(['Class', 'AbstractClass', 'Interface', 'Enumeration', 'Package', 'DataType', 'PrimitiveType']);
-const MULTIPLICITY_TYPES = new Set<UmlRelationType>(['Association', 'Aggregation', 'Composition']);
-const NAMED_RELATION_TYPES = new Set<UmlRelationType>([
-    'Association', 'Aggregation', 'Composition', 'Abstraction', 'Dependency',
-    'InterfaceRealization', 'Realization', 'Substitution', 'Usage'
-]);
 const RESERVED_MEMBER_NAMES = new Set([
     '__type', '__id', '__refType', '__value', 'aggregation', 'diagram', 'diagramType', 'element', 'entities',
     'height', 'isAbstract', 'isActive', 'isDerived', 'isDerivedUnion', 'isOrdered', 'isReadOnly', 'isStatic',
     'isUnique', 'metaInfos', 'multiplicity', 'name', 'operations', 'parameters', 'properties', 'propertyType',
     'relations', 'skip', 'source', 'target', 'visibility', 'width', 'x', 'y'
 ]);
-
-const RELATION_TYPE_MAP: Record<UmlRelationType, string> = {
-    Association: 'ASSOCIATION',
-    Aggregation: 'AGGREGATION',
-    Composition: 'COMPOSITION',
-    Abstraction: 'ABSTRACTION',
-    Dependency: 'DEPENDENCY',
-    Generalization: 'GENERALIZATION',
-    InterfaceRealization: 'INTERFACE_REALIZATION',
-    PackageImport: 'PACKAGE_IMPORT',
-    PackageMerge: 'PACKAGE_MERGE',
-    Realization: 'REALIZATION',
-    Substitution: 'SUBSTITUTION',
-    Usage: 'USAGE'
-};
 
 @injectable()
 export class GenerateClassDiagramTool implements vscode.LanguageModelTool<GenerateClassDiagramInput> {
@@ -143,10 +123,21 @@ export class GenerateClassDiagramTool implements vscode.LanguageModelTool<Genera
             return createToolResult(`Error: ${e instanceof Error ? e.message : String(e)}`);
         }
 
+        const declaredNames = new Set(input.entities.map(entity => entity.name));
+        const inferredClasses = diagram.diagram.entities
+            .filter(node => node.__type === 'Class' && !declaredNames.has(node.name))
+            .map(node => node.name);
+
         this.outputChannel.appendLine(
             `[big-ai] Generated class diagram: ${uri.fsPath} (${input.entities.length} entities, ${input.relationships?.length ?? 0} relationships)`
         );
-        return createToolResult(`Generated UML class diagram at ${uri.fsPath}`);
+        const baseMessage = `Generated UML class diagram at ${uri.fsPath}`;
+        const message =
+            inferredClasses.length === 0
+                ? baseMessage
+                : `${baseMessage}. Auto-created ${inferredClasses.length} undeclared ` +
+                  `type${inferredClasses.length === 1 ? '' : 's'} referenced by a property: ${inferredClasses.join(', ')}.`;
+        return createToolResult(message);
     }
 }
 
@@ -268,9 +259,6 @@ function addProperty(
     if (property.typeName !== undefined) {
         const typeName = validateRequiredString(property.typeName, 'property.typeName');
         const typeNode = findOrCreateTypeNode(diagram, nodesByName, typeName);
-        if (!typeNode) {
-            throw new Error(`No type named "${typeName}" found for property "${property.name}".`);
-        }
         member.propertyType = { __type: 'Reference', __refType: 'DataTypeReference', __value: typeNode.__id };
     }
     owner.properties.push(member);
@@ -291,14 +279,15 @@ function addOperation(
     });
 }
 
-function findOrCreateTypeNode(diagram: UmlDiagramFile, nodesByName: Map<string, UmlNode>, typeName: string): UmlNode | undefined {
+function findOrCreateTypeNode(diagram: UmlDiagramFile, nodesByName: Map<string, UmlNode>, typeName: string): UmlNode {
     const existing = nodesByName.get(typeName);
-    if (existing || !COMMON_PRIMITIVE_TYPES.has(typeName)) {
+    if (existing) {
         return existing;
     }
-    const primitive = addNode(diagram, { name: typeName, elementType: 'PrimitiveType' });
-    nodesByName.set(typeName, primitive);
-    return primitive;
+    const elementType: UmlNodeType = COMMON_PRIMITIVE_TYPES.has(typeName) ? 'PrimitiveType' : 'Class';
+    const created = addNode(diagram, { name: typeName, elementType });
+    nodesByName.set(typeName, created);
+    return created;
 }
 
 function addRelationship(
@@ -315,28 +304,14 @@ function addRelationship(
         throw new Error(`No target element named "${relationship.targetName}" found for relationship.`);
     }
 
-    const relation: Record<string, unknown> = {
-        __type: relationship.relationType,
-        __id: generateId(),
-        source: ref(source.__id),
-        target: ref(target.__id),
-        relationType: RELATION_TYPE_MAP[relationship.relationType]
-    };
-
-    if (NAMED_RELATION_TYPES.has(relationship.relationType) && relationship.name !== undefined) {
-        relation['name'] = relationship.name;
-    }
-    if (MULTIPLICITY_TYPES.has(relationship.relationType)) {
-        const sourceMultiplicity =
-            relationship.sourceMultiplicity === undefined ? undefined : toParserSafeMultiplicity(relationship.sourceMultiplicity);
-        const targetMultiplicity =
-            relationship.targetMultiplicity === undefined ? undefined : toParserSafeMultiplicity(relationship.targetMultiplicity);
-        if (sourceMultiplicity !== undefined) relation['sourceMultiplicity'] = sourceMultiplicity;
-        if (targetMultiplicity !== undefined) relation['targetMultiplicity'] = targetMultiplicity;
-    }
-    if (relationship.relationType === 'Generalization') {
-        relation['isSubstitutable'] = false;
-    }
+    const relation = buildRelationRecord({
+        relationType: relationship.relationType,
+        sourceId: source.__id,
+        targetId: target.__id,
+        name: relationship.name,
+        sourceMultiplicity: relationship.sourceMultiplicity,
+        targetMultiplicity: relationship.targetMultiplicity
+    });
 
     diagram.diagram.relations.push(relation);
 }
@@ -397,36 +372,9 @@ function memberLabel(member: UmlClassMember): string {
     return member.__type === 'Operation' ? `${member.name}()` : member.name;
 }
 
-function ref(nodeId: string, refType = 'Node') {
-    return { __type: 'Reference', __refType: refType, __value: nodeId };
-}
-
 function normalizeUmlPath(filePath: string): string {
     const requestedPath = validateRequiredString(filePath, 'filePath');
     return requestedPath.toLowerCase().endsWith('.uml') ? requestedPath : `${requestedPath}.uml`;
-}
-
-function generateId(): string {
-    const uuid = randomUUID();
-    return `a${uuid.substring(1)}`;
-}
-
-function toParserSafeMultiplicity(value: string): string | undefined {
-    const trimmed = value.trim();
-    if (trimmed === '*') return trimmed;
-    if (/^[a-zA-Z_][\w-]*$/.test(trimmed)) return trimmed;
-    switch (trimmed) {
-        case '1':
-            return 'one';
-        case '0..1':
-            return 'zeroToOne';
-        case '0..*':
-            return '*';
-        case '1..*':
-            return 'oneToMany';
-        default:
-            return undefined;
-    }
 }
 
 function toParserSafeMemberName(value: string): string {

@@ -12,7 +12,7 @@ import { injectable } from 'inversify';
 import * as vscode from 'vscode';
 import { AI_PARTICIPANT_ID, UML_TOOL_NAMES, COMMAND_PATTERNS, SYSTEM_PROMPT } from '../common/index.js';
 import type { GenerateClassDiagramInput, InterviewPhase, InterviewState, ParsedCommand } from '../common/tool-types.js';
-import { InterviewSessionManager } from './interview-session-manager.js';
+import { InterviewSessionManager, type StepAdvancementSignal, type InterviewStepPolicy } from './interview-session-manager.js';
 
 const MAX_HISTORY_TURNS = 10;
 const NO_TOOL_NAMES: readonly string[] = [];
@@ -102,11 +102,8 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         let result = text;
 
         result = result.replace(/\*\*Step\s+\d+\s+of\s+6\s*[\u2014-][^\n*]*\*\*\s*\n*/gi, '');
-
         result = result.replace(/\*Steps?\s+\d+[\u2013\u2014-]\d+\s+detected[^\n]*\*\s*\n*/gi, '');
-
         result = result.replace(/(?:^|\n)\|[^\n]+\|\s*\n\|[\s:|-]+\|(?:\s*\n\|[^\n]+\|)*/g, '');
-
         result = result.replace(/✅\s*\*\*Interview complete\*\*[^\n]*\n*/gi, '');
         result = result.replace(/Start a new session at any time[^\n]*\n*/gi, '');
         result = result.replace(/No active interview session[^\n]*\n*/gi, '');
@@ -144,10 +141,15 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
             .join('\n');
     }
 
-    protected buildUserMessage(request: vscode.ChatRequest, command: ParsedCommand): string {
+    protected buildUserMessage(request: vscode.ChatRequest, command: ParsedCommand, overridePrompt?: string): string {
+        if (overridePrompt !== undefined) {
+            return overridePrompt;
+        }
+
         if (command.argument.trim()) {
             return command.argument.trim();
         }
+
         const defaults: Record<string, string> = {
             interview: 'Please start a requirements interview for a UML class diagram.',
             plan: 'Please show the current interview progress overview.',
@@ -155,9 +157,190 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
             explain: 'Please explain the current UML structure.',
             default: request.prompt
         };
+
         return defaults[command.type] ?? request.prompt;
     }
 
+    protected isSkipRequest(text: string): boolean {
+        return /^(?:\/)?(?:skip|next|continue)(?:\s+(?:this|step|the))?$/i.test(text.trim());
+    }
+
+    protected shouldAdvanceCurrentStep(stepPolicy: InterviewStepPolicy | undefined, prompt: string): boolean {
+        const normalized = prompt.trim();
+        if (!normalized) {
+            return false;
+        }
+
+        const signals = stepPolicy?.advancementSignals ?? [];
+        if (signals.length === 0) {
+            return false;
+        }
+
+        return signals.some(signal => this.matchesAdvancementSignal(signal, normalized));
+    }
+
+    protected matchesAdvancementSignal(signal: StepAdvancementSignal, prompt: string): boolean {
+        switch (signal) {
+            case 'entity-list':
+                return this.hasEntityList(prompt);
+            case 'class-declaration':
+                return this.hasClassOrInterfaceDeclaration(prompt);
+            case 'relationship':
+                return this.hasRelationshipSignal(prompt);
+            case 'multiplicity-or-details':
+                return this.hasMultiplicitySignal(prompt) || this.hasNoAdditionalDetailsSignal(prompt);
+            case 'confirmation':
+                return this.sessionManager.isConfirmationAnswer(prompt);
+            default:
+                return false;
+        }
+    }
+
+    protected hasEntityList(prompt: string): boolean {
+        const itemCount = this.countListItems(prompt);
+        if (itemCount >= 3 || (/\b(?:entities|classes|interfaces)\b/i.test(prompt) && itemCount >= 2)) {
+            return true;
+        }
+
+        const stopWords = new Set([
+            'the', 'a', 'an', 'and', 'or', 'of', 'to', 'for', 'with', 'in', 'on', 'at', 'by', 'is', 'are', 'was', 'were',
+            'be', 'being', 'been', 'this', 'that', 'these', 'those', 'what', 'which', 'who', 'whom', 'whose', 'please',
+            'main', 'top', 'level', 'system', 'diagram', 'uml', 'create', 'class', 'classes', 'interface', 'interfaces'
+        ]);
+
+        const contentWords = prompt
+            .toLowerCase()
+            .match(/\b[a-z][a-z0-9_-]*\b/g)
+            ?.filter(word => !stopWords.has(word)) ?? [];
+
+        return contentWords.length >= 3;
+    }
+
+    protected hasClassOrInterfaceDeclaration(prompt: string): boolean {
+        return /\b(class|classes|interface|interfaces|abstract|abstract class)\b/i.test(prompt);
+    }
+
+    protected hasRelationshipSignal(prompt: string): boolean {
+        return /\b(relationship|relates? to|association|aggregation|composition|inheritance|extends|implements|depends on|uses|contains|has|teaches|enrolls? in|owned by|part of)\b/i.test(prompt);
+    }
+
+    protected hasMultiplicitySignal(prompt: string): boolean {
+        return /\b(\d+\s*\.\.\s*\d+|\d+\s*\.\.\s*\*|\*|one to many|many to one|many to many|one to one|0\.\.1|1\.\.\*|0\.\.\*)\b/i.test(prompt);
+    }
+
+    protected hasNoAdditionalDetailsSignal(prompt: string): boolean {
+        return /\b(no|none|nothing|nope|skip|empty|leave\s+them\s+empty|no\s+additional\s+(details|attributes)|nothing\s+else)\b/i.test(prompt);
+    }
+
+    protected countListItems(prompt: string): number {
+        return prompt
+            .split(/,|\band\b|\b&\b/i)
+            .map(part => part.trim())
+            .filter(Boolean).length;
+    }
+
+    protected isUncertainAnswer(prompt: string): boolean {
+        return /\b(i\s+don'?t\s+know|dont\s+know|not\s+sure|unsure|no\s+idea)\b/i.test(prompt);
+    }
+
+    protected normalizeRevisionText(text: string): string {
+        const trimmed = text.trim().replace(/\s+/g, ' ');
+        if (!trimmed) {
+            return '';
+        }
+
+        return trimmed.replace(/^\/?(?:interview|plan|modify|explain)\b\s*/i, '');
+    }
+
+    protected normalizeIncomingPrompt(prompt: string): string {
+        return prompt
+            .trim()
+            .replace(/^@\w+\s+/i, '')
+            .trim();
+    }
+
+    protected async handleStepTurn(
+        stepNumber: number,
+        prompt: string,
+        model: vscode.LanguageModelChat,
+        token: vscode.CancellationToken
+    ): Promise<{ advanced: boolean; generationConfirmed: boolean; summary?: string }> {
+        switch (stepNumber) {
+            case 1:
+                return this.handleScopeStep(prompt, model, token);
+            case 2:
+                return this.handleClassStep(prompt, model, token);
+            case 3:
+                return this.handleRelationshipStep(prompt, model, token);
+            case 4:
+                return this.handleDetailStep(prompt, model, token);
+            case 5:
+                return this.handleConfirmationStep(prompt);
+            default:
+                return { advanced: false, generationConfirmed: false };
+        }
+    }
+
+    protected async handleScopeStep(
+        prompt: string,
+        _model: vscode.LanguageModelChat,
+        _token: vscode.CancellationToken
+    ): Promise<{ advanced: boolean; generationConfirmed: boolean; summary?: string }> {
+        const parsed = this.sessionManager.applyStepInput(1, prompt);
+        const summary = parsed.summary || 'Scope identified';
+        this.sessionManager.completeCurrentStep(summary);
+        this.sessionManager.advanceToNextStep();
+        return { advanced: true, generationConfirmed: false, summary };
+    }
+
+    protected async handleClassStep(
+        prompt: string,
+        _model: vscode.LanguageModelChat,
+        _token: vscode.CancellationToken
+    ): Promise<{ advanced: boolean; generationConfirmed: boolean; summary?: string }> {
+        const parsed = this.sessionManager.applyStepInput(2, prompt);
+        const summary = parsed.summary || 'Classes identified';
+        this.sessionManager.completeCurrentStep(summary);
+        this.sessionManager.advanceToNextStep();
+        return { advanced: true, generationConfirmed: false, summary };
+    }
+
+    protected async handleRelationshipStep(
+        prompt: string,
+        _model: vscode.LanguageModelChat,
+        _token: vscode.CancellationToken
+    ): Promise<{ advanced: boolean; generationConfirmed: boolean; summary?: string }> {
+        const parsed = this.sessionManager.applyStepInput(3, prompt);
+        const summary = parsed.summary || 'Relationships identified';
+        this.sessionManager.completeCurrentStep(summary);
+        this.sessionManager.advanceToNextStep();
+        return { advanced: true, generationConfirmed: false, summary };
+    }
+
+    protected async handleDetailStep(
+        prompt: string,
+        _model: vscode.LanguageModelChat,
+        _token: vscode.CancellationToken
+    ): Promise<{ advanced: boolean; generationConfirmed: boolean; summary?: string }> {
+        const parsed = this.sessionManager.applyStepInput(4, prompt);
+        const summary = parsed.summary || 'Details identified';
+        this.sessionManager.completeCurrentStep(summary);
+        this.sessionManager.advanceToNextStep();
+        return { advanced: true, generationConfirmed: false, summary };
+    }
+
+    protected async handleConfirmationStep(
+        prompt: string
+    ): Promise<{ advanced: boolean; generationConfirmed: boolean; summary?: string }> {
+        const isConfirmation = this.sessionManager.isConfirmationAnswer(prompt);
+        if (!isConfirmation) {
+            return { advanced: false, generationConfirmed: false };
+        }
+
+        this.sessionManager.completeCurrentStep('Diagram confirmed');
+        this.sessionManager.advanceToNextStep();
+        return { advanced: true, generationConfirmed: true, summary: 'Diagram confirmed' };
+    }
 
     protected async handleRequest(
         request: vscode.ChatRequest,
@@ -173,6 +356,12 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         const isBareInterview = parsedCommand.type === 'interview' && !parsedCommand.argument.trim();
         const isNewSessionRequest = parsedCommand.type === 'interview' && (!this.sessionManager.isActive || isBareInterview);
         const genuineAnswer = isGenuineAnswer(parsedCommand, this.sessionManager.isActive);
+        const skipRequest = this.isSkipRequest(statusQuerySource);
+        const currentStepNumberBeforeSkip = this.sessionManager.currentStepNumber;
+        const currentStepPolicy = this.sessionManager.currentStep?.definition.policy;
+        const canSkipCurrentStep = currentStepPolicy?.canSkip === true;
+        const skipApplied = this.sessionManager.isActive && skipRequest && canSkipCurrentStep;
+        const skipBlockedAtCurrentStep = this.sessionManager.isActive && skipRequest && !canSkipCurrentStep;
 
         this.outputChannel.appendLine(`[big-ai] Request: "${request.prompt}"`);
         this.outputChannel.appendLine(`[big-ai] Command type: ${parsedCommand.type}`);
@@ -210,11 +399,66 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
             };
         }
 
-        const [model] = await vscode.lm.selectChatModels({ vendor: 'copilot', family: 'gpt-4o-mini' });
+        if (skipBlockedAtCurrentStep) {
+            const blockedMessage = currentStepPolicy?.skipBlockedMessage ?? 'This step cannot be skipped right now. Please answer the current step question.';
+            if (currentStepPolicy?.summaryMode === 'diagram') {
+                const summary = this.sessionManager.buildDiagramSummary();
+                stream.markdown(summary);
+            }
+            stream.markdown(`\n${blockedMessage}`);
+
+            return {
+                metadata: {
+                    command: parsedCommand.type,
+                    toolUsed: false,
+                    responseStreamed: true,
+                    commandArgument: statusQuerySource,
+                    sessionActive: this.sessionManager.isActive,
+                    sessionCompleted: this.sessionManager.isCompleted,
+                    currentStepNumber: this.sessionManager.currentStepNumber,
+                    awaitingConfirmation: currentStepPolicy?.summaryMode === 'diagram'
+                }
+            };
+        }
+
+        if (skipApplied) {
+            this.sessionManager.advanceToNextStep();
+            this.outputChannel.appendLine(`[big-ai] Skipped step ${currentStepNumberBeforeSkip}, advanced to ${this.sessionManager.currentStepNumber}`);
+        }
+
+        const activeStepPolicy = this.sessionManager.currentStep?.definition.policy;
+        const shouldRenderDiagramSummary = this.sessionManager.isActive
+            && activeStepPolicy?.summaryMode === 'diagram'
+            && !this.sessionManager.isConfirmationAnswer(request.prompt);
+
+        if (shouldRenderDiagramSummary) {
+            const requestedRevision = skipRequest || this.isUncertainAnswer(request.prompt)
+                ? undefined
+                : this.normalizeRevisionText(statusQuerySource || request.prompt);
+            if (requestedRevision) {
+                this.sessionManager.applyRevisionToDraft(requestedRevision);
+            }
+            const summary = this.sessionManager.buildDiagramSummary();
+            stream.markdown(summary);
+            stream.markdown('Shall I create the diagram with these elements? Reply `yes` to accept or ask for a revision.');
+
+            return {
+                metadata: {
+                    command: parsedCommand.type,
+                    toolUsed: false,
+                    responseStreamed: true,
+                    commandArgument: statusQuerySource,
+                    sessionActive: this.sessionManager.isActive,
+                    sessionCompleted: this.sessionManager.isCompleted,
+                    currentStepNumber: this.sessionManager.currentStepNumber,
+                    awaitingConfirmation: true
+                }
+            };
+        }
+
+        const [model] = await vscode.lm.selectChatModels({ vendor: 'copilot' });
         if (!model) {
-            stream.markdown(
-                '**Error**: No compatible chat model (Claude 4.6 Sonnet) is available. Please ensure Copilot Chat is installed and authenticated.'
-            );
+            stream.markdown('**Error**: No compatible Copilot chat model is available. Please ensure GitHub Copilot Chat is installed and authenticated.');
             return {
                 metadata: {
                     command: parsedCommand.type,
@@ -226,9 +470,17 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
 
         let stepAdvancedThisTurn = false;
         let generationConfirmedThisTurn = false;
+        let skipAheadCount = 0;
 
-        if (genuineAnswer && this.sessionManager.isActive) {
+        if (genuineAnswer && this.sessionManager.isActive && !skipApplied) {
+            skipAheadCount = await this.runSkipAheadDetection(model, request.prompt, token);
+        }
+
+        if (genuineAnswer && this.sessionManager.isActive && skipAheadCount === 0 && !skipApplied) {
             const stepNum = this.sessionManager.currentStepNumber;
+            const stepPolicy = this.sessionManager.currentStep?.definition.policy;
+            const shouldAdvance = this.shouldAdvanceCurrentStep(stepPolicy, request.prompt);
+
             const isOnStep5 = stepNum === 5;
             const isConfirmation = this.sessionManager.isConfirmationAnswer(request.prompt);
 
@@ -236,16 +488,18 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
 
             if (isOnStep5 && !isConfirmation) {
                 this.outputChannel.appendLine('[big-ai] Step 5: non-confirmation answer, holding on step 5');
+            } else if (stepNum <= 4 && !shouldAdvance) {
+                this.outputChannel.appendLine(`[big-ai] Step ${stepNum}: prompt not specific enough, holding on current step`);
             } else {
-                const stepTitle = this.sessionManager.currentStep?.definition.title ?? '';
-                const summary = await this.generateStepSummary(model, stepTitle, request.prompt, token);
+                const stepResult = await this.handleStepTurn(stepNum, request.prompt, model, token);
+                stepAdvancedThisTurn = stepResult.advanced;
+                generationConfirmedThisTurn = stepResult.generationConfirmed;
 
-                this.sessionManager.completeCurrentStep(summary);
-                this.sessionManager.advanceToNextStep();
-                stepAdvancedThisTurn = true;
+                if (stepResult.summary) {
+                    this.outputChannel.appendLine(`[big-ai] Step ${stepNum} summary: ${stepResult.summary}`);
+                }
 
-                if (isOnStep5 && isConfirmation) {
-                    generationConfirmedThisTurn = true;
+                if (generationConfirmedThisTurn) {
                     this.outputChannel.appendLine('[big-ai] Step 5 confirmed — generation runs on step 6 this turn');
                 }
 
@@ -273,17 +527,19 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         }
 
         const historyMessages = this.buildHistoryMessages(context);
+        const userMessagePrompt = skipApplied ? 'Please continue with the next interview step.' : undefined;
 
         const messages: vscode.LanguageModelChatMessage[] = [
             vscode.LanguageModelChatMessage.User(
                 this.buildSystemMessage(request, context, parsedCommand, interviewState)
             ),
             ...historyMessages,
-            vscode.LanguageModelChatMessage.User(this.buildUserMessage(request, parsedCommand))
+            vscode.LanguageModelChatMessage.User(this.buildUserMessage(request, parsedCommand, userMessagePrompt))
         ];
 
         let toolUsed = false;
         let responseStreamed = false;
+        let streamedText = '';
 
         try {
             let generationRetryRequested = false;
@@ -310,6 +566,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                             const normalized = this.stripLeadingStepHeaderEcho(part.value);
                             if (normalized.trim()) {
                                 stream.markdown(normalized);
+                                streamedText += normalized;
                                 responseStreamed = true;
                             }
                         }
@@ -326,9 +583,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
 
                     if (requireToolCalls && !generationRetryRequested) {
                         generationRetryRequested = true;
-                        this.outputChannel.appendLine(
-                            '[big-ai] Step 6: no tool call from LLM; deriving aggregate input as JSON'
-                        );
+                        this.outputChannel.appendLine('[big-ai] Step 6: no tool call from LLM; deriving aggregate input as JSON');
                         const generatedInput = await this.requestGenerationInput(model, messages, token);
                         const toolResult = await vscode.lm.invokeTool(
                             UML_TOOL_NAMES.generateClassDiagram,
@@ -348,9 +603,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                     }
 
                     if (requireToolCalls && !responseStreamed) {
-                        this.outputChannel.appendLine(
-                            '[big-ai] Step 6: generation turn produced text only; showing error'
-                        );
+                        this.outputChannel.appendLine('[big-ai] Step 6: generation turn produced text only; showing error');
                         stream.markdown(
                             '**Error**: Generation was confirmed, but the diagram generator could not derive the generation input.'
                         );
@@ -417,40 +670,21 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                 stepAdvancedThisTurn,
                 generationConfirmedThisTurn,
                 interviewPhase: interviewState.phase,
-                awaitingConfirmation: this.sessionManager.isActive && this.sessionManager.currentStepNumber === 5,
-                generationConfirmed: isOnStep6
+                awaitingConfirmation: this.sessionManager.isActive && this.sessionManager.currentStep?.definition.policy.summaryMode === 'diagram',
+                generationConfirmed: isOnStep6,
+                presentedSummary: this.looksLikeGenerationSummary(streamedText)
             }
         };
     }
 
     protected async generateStepSummary(
-        model: vscode.LanguageModelChat,
+        _model: vscode.LanguageModelChat,
         stepTitle: string,
         userAnswer: string,
-        token: vscode.CancellationToken
+        _token: vscode.CancellationToken
     ): Promise<string> {
-        const safeAnswer = userAnswer.slice(0, 300);
-        const prompt =
-            `In one short sentence (max 15 words), summarize what was decided for the UML diagram step "${stepTitle}" ` +
-            `based on this user answer: "${safeAnswer}". Reply with only the summary sentence, no leading punctuation, no quotes.`;
-
-        try {
-            const response = await model.sendRequest(
-                [vscode.LanguageModelChatMessage.User(prompt)],
-                {},
-                token
-            );
-            let text = '';
-            for await (const part of response.stream) {
-                if (part instanceof vscode.LanguageModelTextPart) {
-                    text += part.value;
-                }
-            }
-            const summary = text.trim().replace(/^["']|["']$/g, '');
-            return summary.slice(0, 100) || userAnswer.slice(0, 80).trim();
-        } catch {
-            return userAnswer.slice(0, 80).trim() + (userAnswer.length > 80 ? '…' : '');
-        }
+        const normalized = this.normalizeStepSummary(userAnswer);
+        return normalized || stepTitle;
     }
 
     protected async runSkipAheadDetection(
@@ -458,7 +692,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         content: string,
         token: vscode.CancellationToken
     ): Promise<number> {
-        const stepsAnswered = await this.analyzeSkipAhead(model, content, token);
+        const stepsAnswered = this.analyzeSkipAhead(content);
         const currentStep = this.sessionManager.currentStepNumber; 
 
         const consecutive: number[] = [];
@@ -470,7 +704,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
             }
         }
 
-        const stepsToProcess = consecutive.length > 0 ? consecutive : [currentStep];
+        const stepsToProcess = consecutive.length > 1 ? consecutive : [];
 
         for (const stepNumber of stepsToProcess) {
             if (this.sessionManager.currentStepNumber !== stepNumber) break;
@@ -484,53 +718,95 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         return stepsToProcess.length;
     }
 
-    protected async analyzeSkipAhead(
-        model: vscode.LanguageModelChat,
-        content: string,
-        token: vscode.CancellationToken
-    ): Promise<number[]> {
-        const safeContent = content.slice(0, 500);
-        const prompt =
-            `You are analysing a user's opening message to a UML class diagram interview ` +
-            `to determine which interview steps it already clearly answers.\n\n` +
-            `The interview steps are:\n` +
-            `1. Define the UML scope and main entities\n` +
-            `2. Model core classes and interfaces (specific class/interface names and types)\n` +
-            `3. Specify relationships between classes (at least one named relationship or direction)\n` +
-            `4. Refine associations and multiplicities (explicit values like "1..*", "0..1", "many")\n` +
-            `5. Confirm and create the diagram — always requires explicit user confirmation, NEVER auto-complete\n` +
-            `6. Review and next steps — always requires diagram creation, NEVER auto-complete\n\n` +
-            `Criteria (include a step ONLY when the message provides CLEAR, SPECIFIC information):\n` +
-            `- Step 1: system name or domain AND at least one entity name are mentioned\n` +
-            `- Step 2: two or more specific class or interface names are listed\n` +
-            `- Step 3: at least one relationship type or direction between named classes is stated\n` +
-            `- Step 4: explicit multiplicity values are given for at least one relationship\n\n` +
-            `User's message: "${safeContent}"\n\n` +
-            `Return ONLY a JSON array of answered step numbers (1–4 only, never 5 or 6). ` +
-            `If a step is only vaguely implied, do NOT include it. ` +
-            `Examples of valid responses: [1] or [1,2] or [1,2,3] or [1,2,3,4]`;
+    protected analyzeSkipAhead(
+        content: string
+    ): number[] {
+        const steps: number[] = [];
+        const prompt = content.trim();
 
-        try {
-            const response = await model.sendRequest(
-                [vscode.LanguageModelChatMessage.User(prompt)],
-                {},
-                token
-            );
-            let text = '';
-            for await (const part of response.stream) {
-                if (part instanceof vscode.LanguageModelTextPart) {
-                    text += part.value;
-                }
-            }
-            const match = text.match(/\[[\d,\s]*\]/);
-            if (!match) return [];
-            const steps: unknown[] = JSON.parse(match[0]);
-            return (steps as number[])
-                .filter(n => typeof n === 'number' && n >= 1 && n <= 4)
-                .sort((a, b) => a - b);
-        } catch {
-            return [];
+        if (!prompt) {
+            return steps;
         }
+
+        if (this.isExplicitStep1Skip(prompt)) {
+            steps.push(1);
+        } else {
+            return steps;
+        }
+
+        if (this.isExplicitStep2Skip(prompt)) {
+            steps.push(2);
+        } else {
+            return steps;
+        }
+
+        if (this.isExplicitStep3Skip(prompt)) {
+            steps.push(3);
+        } else {
+            return steps;
+        }
+
+        if (this.isExplicitStep4Skip(prompt)) {
+            steps.push(4);
+        }
+
+        return steps;
+    }
+
+    protected normalizeStepSummary(text: string): string {
+        const trimmed = text.trim().replace(/\s+/g, ' ');
+        if (!trimmed) {
+            return '';
+        }
+
+        const withoutCommandPrefix = trimmed.replace(/^\/?(?:interview|plan|modify|explain)\b\s*/i, '');
+        const firstSentence = withoutCommandPrefix.split(/[.!?]/)[0].trim();
+        return (firstSentence || withoutCommandPrefix).slice(0, 100);
+    }
+
+    protected isExplicitStep1Skip(prompt: string): boolean {
+        const hasDomain = /\b(system|platform|application|app|portal|tool|service|solution|domain|university|course|school|hospital|inventory|library|store|shop|booking)\b/i.test(prompt);
+        const entityList = this.extractListItems(prompt);
+        return hasDomain && entityList.length >= 2;
+    }
+
+    protected isExplicitStep2Skip(prompt: string): boolean {
+        if (!/\b(class|classes|interface|interfaces|abstract class|abstract classes)\b/i.test(prompt)) {
+            return false;
+        }
+
+        const entityList = this.extractListItems(prompt);
+        if (entityList.length >= 2) {
+            return true;
+        }
+
+        const namedTypes = prompt.match(/\b[A-Z][A-Za-z0-9_]*\b/g) ?? [];
+        return namedTypes.length >= 2;
+    }
+
+    protected isExplicitStep3Skip(prompt: string): boolean {
+        const hasRelationshipLanguage = /\b(relationship|relationships|associate(?:d|s|ion)?|aggregate(?:d|s|ion)?|compose(?:d|s|ion)?|inherit(?:ance|s|ed)?|extend(?:s|ed)?|implement(?:s|ed)?|depend(?:s|ed)?|use(?:s|d)?|contain(?:s|ed)?|own(?:s|ed)?|belong(?:s|ed)?|relat(?:e|es|ed|ion)|link(?:s|ed)?|connect(?:s|ed)?)\b/i.test(prompt);
+        const entityList = this.extractListItems(prompt);
+        return hasRelationshipLanguage && entityList.length >= 2;
+    }
+
+    protected isExplicitStep4Skip(prompt: string): boolean {
+        const hasMultiplicity = /\b(\d+\s*\.\.\s*\d+|\d+\s*\.\.\s*\*|0\s*\.\.\s*1|1\s*\.\.\s*\*|0\s*\.\.\s*\*|1\s*:\s*\d+|\*\s*:\s*\d+|one to many|many to one|many to many|one to one|optional|exactly one)\b/i.test(prompt);
+        const hasRelationshipContext = this.isExplicitStep3Skip(prompt);
+        return hasMultiplicity && hasRelationshipContext;
+    }
+
+    protected extractListItems(text: string): string[] {
+        const match = text.match(/\b(?:with|including|such as|like|consisting of|containing|having|contains|includes|entities?|classes?|interfaces?)\b[:\s]+([^\n.?!]+)/i);
+        const source = match?.[1] ?? text;
+        return source
+            .split(/,|\band\b|;/i)
+            .map(item => item.trim())
+            .filter(item => item.length > 0);
+    }
+
+    protected buildDefaultDiagramFilePath(): string {
+        return 'workspace/course_registration.uml';
     }
 
     protected async requestGenerationInput(
@@ -575,7 +851,11 @@ Use only confirmed information from the transcript. Include relationships after 
             }
         }
 
-        const parsed = this.parseJsonObject(text);
+        const parsed = this.parseJsonObject(text) as Partial<GenerateClassDiagramInput>;
+        if (!parsed.filePath || !parsed.filePath.trim()) {
+            parsed.filePath = this.buildDefaultDiagramFilePath();
+        }
+
         return parsed as GenerateClassDiagramInput;
     }
 
@@ -633,7 +913,9 @@ Use only confirmed information from the transcript. Include relationships after 
     }
 
     protected parseCommand(prompt: string): ParsedCommand {
-        const interviewMatch = prompt.match(COMMAND_PATTERNS.interview);
+        const normalizedPrompt = this.normalizeIncomingPrompt(prompt);
+
+        const interviewMatch = normalizedPrompt.match(COMMAND_PATTERNS.interview);
         if (interviewMatch) {
             return {
                 type: 'interview',
@@ -641,7 +923,7 @@ Use only confirmed information from the transcript. Include relationships after 
             };
         }
 
-        const modifyMatch = prompt.match(COMMAND_PATTERNS.modify);
+        const modifyMatch = normalizedPrompt.match(COMMAND_PATTERNS.modify);
         if (modifyMatch) {
             return {
                 type: 'modify',
@@ -649,7 +931,7 @@ Use only confirmed information from the transcript. Include relationships after 
             };
         }
 
-        const explainMatch = prompt.match(COMMAND_PATTERNS.explain);
+        const explainMatch = normalizedPrompt.match(COMMAND_PATTERNS.explain);
         if (explainMatch) {
             return {
                 type: 'explain',
@@ -657,7 +939,7 @@ Use only confirmed information from the transcript. Include relationships after 
             };
         }
 
-        const planMatch = prompt.match(COMMAND_PATTERNS.plan);
+        const planMatch = normalizedPrompt.match(COMMAND_PATTERNS.plan);
         if (planMatch) {
             return {
                 type: 'plan',
@@ -668,13 +950,20 @@ Use only confirmed information from the transcript. Include relationships after 
         if (!this.sessionManager.isActive && !this.sessionManager.isCompleted) {
             return {
                 type: 'interview',
-                argument: prompt
+                argument: normalizedPrompt
+            };
+        }
+
+        if (this.sessionManager.isCompleted) {
+            return {
+                type: 'interview',
+                argument: normalizedPrompt
             };
         }
 
         return {
             type: 'default',
-            argument: prompt
+            argument: normalizedPrompt
         };
     }
 
@@ -707,7 +996,7 @@ Use only confirmed information from the transcript. Include relationships after 
             if (stepNumber === 5) {
                 return [
                     planFollowup('📋 Show progress', '/plan'),
-                    { prompt: 'yes', label: '✅ Yes, create the diagram' },
+                    { prompt: 'yes', label: '✅ Accept summary and create the diagram' },
                     interviewFollowup('✏️ Revise summary', 'Please revise the summary')
                 ];
             }
@@ -726,9 +1015,8 @@ Use only confirmed information from the transcript. Include relationships after 
             interview: awaitingConfirmation
                 ? [
                       planFollowup('📋 Show progress', '/plan'),
-                      { prompt: 'generate', label: 'Generate' },
-                      interviewFollowup('Revise summary', 'Revise the summary'),
-                      interviewFollowup('Add details', 'Add missing details')
+                                            { prompt: 'generate', label: '✅ Accept summary and create the diagram' },
+                                            interviewFollowup('Revise summary', 'Revise the summary')
                   ]
                 : [
                       planFollowup('📋 Show progress', '/plan'),
@@ -802,18 +1090,41 @@ Use only confirmed information from the transcript. Include relationships after 
         return /\b(generate|create|confirm|confirmed|yes|yep|looks good|go ahead|proceed)\b/i.test(prompt);
     }
 
+    protected looksLikeGenerationSummary(text: string): boolean {
+        if (!text) {
+            return false;
+        }
+
+        const hasSummary = /\bsummary\b/i.test(text) || /^\s*-?\s*diagram file:/im.test(text);
+        const invitesGeneration =
+            /reply\b[\s\S]*?\bgenerate\b/i.test(text) ||
+            /\bgenerate\b[\s\S]*?\b(diagram|to create)\b/i.test(text);
+        const noMissingInfo =
+            /missing info(?:rmation)?:?\s*(none|no\b)/i.test(text) ||
+            /\b(nothing|no info\w*)\s+(?:is\s+)?missing\b/i.test(text);
+
+        return hasSummary && invitesGeneration && noMissingInfo;
+    }
+
     protected previousAssistantRequestedGeneration(context: vscode.ChatContext): boolean {
-        for (const turn of [...context.history].reverse()) {
+        const recentHistory = context.history.slice(-MAX_HISTORY_TURNS);
+
+        for (const turn of [...recentHistory].reverse()) {
             if (!(turn instanceof vscode.ChatResponseTurn)) {
                 continue;
             }
 
-            const responseText = this.responseTurnText(turn).toLowerCase();
-            return (
-                responseText.includes('summary') &&
-                responseText.includes('reply "generate"') &&
-                /missing information:\s*(none|no missing information)/i.test(responseText)
-            );
+            const recorded = turn.result?.metadata?.presentedSummary;
+            if (recorded === true) {
+                return true;
+            }
+            if (recorded === false) {
+                continue;
+            }
+
+            if (this.looksLikeGenerationSummary(this.responseTurnText(turn))) {
+                return true;
+            }
         }
 
         return false;
@@ -835,7 +1146,13 @@ Use only confirmed information from the transcript. Include relationships after 
         const toolRule = isOnStep6
             ? 'The user confirmed the diagram on the previous turn. Call `biguml-generate-class-diagram` exactly once with ALL confirmed information from the transcript. This tool creates the .uml file and all nodes, members, and relationships in one call. Do not read the file first.'
             : isOnStep5
-            ? 'DO NOT call any tools on this turn. Show a concise summary of everything collected so far, then ask exactly: "Shall I create the diagram with these elements?"'
+            ? 'DO NOT call any tools on this turn. Show a diagram-focused summary of what is known so far: scope, entities, classes, relationships, multiplicities, and any additional details already confirmed. Say clearly that step 5 cannot be skipped. Then ask the user to accept the summary or request a revision. Do not ask about later steps.'
+            : stepNumber === 2
+            ? 'DO NOT call any tools on this turn. Ask exactly one question about the specific class and interface names only. If the user already listed names, briefly acknowledge them and ask whether any are abstract or interfaces. Do NOT ask about relationships, multiplicities, attributes, or operations.'
+            : stepNumber === 3
+            ? 'DO NOT call any tools on this turn. Ask exactly one question about relationships between the classes only. Do NOT ask about class names, multiplicities, attributes, or operations.'
+            : stepNumber === 4
+            ? 'DO NOT call any tools on this turn. Ask exactly one question about multiplicities and any remaining attributes or operations only. Do NOT revisit scope, class names, or relationship types.'
             : 'DO NOT call any tools on this turn. Ask exactly one question scoped to this step. Do not ask about content that belongs to a later step.';
 
         return `## Interview Session — Step ${stepNumber} of 6
@@ -854,6 +1171,7 @@ ${toolRule}
 ## Chat History Transcript
 Use this as the source of truth for requirements collected so far. Do not invent missing information.
 If the last user message is a .uml path, treat it as the target file only — not as attribute or operation detail.
+When summarizing step 5, keep it to one compact paragraph or short bullet list and omit any file-path discussion unless the user explicitly supplied one.
 Short acknowledgements (yes, ok, sure, use those, sounds good) confirm the concrete items proposed in the immediately preceding assistant turn.
 
 ${this.buildInterviewTranscript(context)}`;
@@ -869,7 +1187,7 @@ ${this.buildInterviewTranscript(context)}`;
 
         const generationRule = interviewState.confirmed
             ? 'The user confirmed a complete prior summary with no missing information. Call biguml-generate-class-diagram exactly once with the complete confirmed diagram. This tool creates or replaces the target .uml file, then creates nodes, members, and relationships in deterministic order. Do not read the file first. Do not output raw UML.'
-            : 'The user has not confirmed a complete summary. Do not call createUmlFile, addNode, addClassMember, addRelation, removeNode, or removeRelation. Continue the interview by asking exactly one clear, friendly question, or show the required summary only when no information is missing. You may offer concrete suggestions when useful, but label them as suggestions that the user can accept or change.';
+            : 'The user has not confirmed a complete summary. Do not call createUmlFile, addNode, addClassMember, addRelation, removeNode, or removeRelation. Continue the interview by asking exactly one clear, friendly question. If you summarize, keep it short and do not mention missing information or the file path unless the user explicitly supplied one.';
 
         return `## Interview State
 - Phase: ${interviewState.phase}
@@ -883,8 +1201,9 @@ ${generationRule}
 ## Chat History Transcript
 Use this transcript as the source of truth for requirements. Do not invent missing requirements.
 If the last user message is a .uml path, treat it as the target diagram file, not as attribute or operation details.
+When summarizing step 5, keep it short and do not mention missing information or the file path unless the user explicitly supplied one.
 Only generate attributes or operations that the user explicitly named, explicitly accepted from the previous assistant suggestion, or explicitly requested no details.
-Short acknowledgements such as yes, ok, sure, use those, that works, and sounds good confirm the concrete items suggested in the immediately previous assistant turn.
+Short acknowledgements such as yes, ok, sure, use those, that works, and sounds good confirm the concrete items suggested in the immediately preceding assistant turn.
 
 ${this.buildInterviewTranscript(context)}`;
     }
@@ -904,7 +1223,7 @@ ${this.buildInterviewTranscript(context)}`;
                     Each step has a strict scope — do not ask about content belonging to a later step.
                     Ask exactly one focused question per response.
                     Do not offer examples that require multiple answers.`
-                                    : `## Interview Mode Activation
+                : `## Interview Mode Activation
                     You are in INTERVIEW mode. Your goals:
                     1. Gather class diagram requirements in this order: scope, entities, relationships, details, confirmation.
                     2. Ask exactly one clarifying question per assistant response when information is missing.
@@ -944,7 +1263,7 @@ ${this.buildInterviewTranscript(context)}`;
             default: `## General Conversation Mode
                     Respond helpfully to UML-related questions while maintaining expert-level knowledge.
                     Proactively offer to dive deeper using /interview, /modify, or /explain modes.`
-                            };
+        };
 
         const modeContext = commandContexts[command.type] ?? commandContexts['default'];
 
@@ -968,7 +1287,6 @@ ${this.buildInterviewStateInstruction(context, interviewState)}
 ## Context Information
 - ${referenceInfo}`;
     }
-
 
     dispose(): void {
         this.participant?.dispose();

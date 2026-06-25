@@ -7,11 +7,43 @@
  * SPDX-License-Identifier: MIT
  *********************************************************************************/
 
+import { randomUUID } from 'crypto';
 import * as path from 'path';
 import * as vscode from 'vscode';
 
 export function createToolResult(message: string): vscode.LanguageModelToolResult {
     return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(message)]);
+}
+
+export function generateId(): string {
+    const uuid = randomUUID();
+    return `a${uuid.substring(1)}`;
+}
+
+export function ref(nodeId: string, refType = 'Node'): { __type: 'Reference'; __refType: string; __value: string } {
+    return { __type: 'Reference', __refType: refType, __value: nodeId };
+}
+
+export function toParserSafeMultiplicity(value: string): string | undefined {
+    const trimmed = value.trim();
+    if (trimmed === '*') {
+        return trimmed;
+    }
+    if (/^[a-zA-Z_][\w-]*$/.test(trimmed)) {
+        return trimmed;
+    }
+    switch (trimmed) {
+        case '1':
+            return 'one';
+        case '0..1':
+            return 'zeroToOne';
+        case '0..*':
+            return '*';
+        case '1..*':
+            return 'oneToMany';
+        default:
+            return undefined;
+    }
 }
 
 export function resolveWorkspacePath(filePath: string, options: { requireUmlExtension?: boolean } = {}): vscode.Uri {
