@@ -145,6 +145,16 @@
           "type": "boolean",
           "default": false,
           "description": "Persist timeline entries across restarts."
+        },
+        "bigUML.ai.modelVendor": {
+          "type": "string",
+          "default": "copilot",
+          "description": "Vendor for the language model used by the @biguml chat participant (e.g. 'copilot')."
+        },
+        "bigUML.ai.modelFamily": {
+          "type": "string",
+          "default": "",
+          "description": "Preferred model family for the @biguml chat participant (e.g. 'gpt-4o', 'claude-3.5-sonnet'). Leave empty to use any available model from the vendor. Falls back to any available model if the requested family is not installed."
         }
       }
     },

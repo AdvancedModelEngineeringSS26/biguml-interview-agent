@@ -41,10 +41,49 @@ export function emptyUmlDiagramFile(diagramType: DiagramType = 'CLASS'): UmlReco
 }
 
 export function stringifyUmlDiagramFile(diagram: unknown): string {
+    // Drop layout entries whose element reference is dangling (e.g. a stale "undefined" left by an earlier
+    // edit). Without this, one corrupt metaInfo makes every later edit throw "Invalid UML reference".
+    pruneDanglingMetaInfos(diagram);
     const ast = toSerializableAst(diagram);
     const serialized = `${services.UmlDiagram.serializer.Serializer.serialize(ast as never)}\n`;
     validateSerializedUml(serialized);
     return serialized;
+}
+
+function pruneDanglingMetaInfos(diagram: unknown): void {
+    if (!isRecord(diagram) || !Array.isArray(diagram.metaInfos)) {
+        return;
+    }
+    const ids = new Set<string>();
+    collectIds(diagram, ids);
+    diagram.metaInfos = diagram.metaInfos.filter(meta => {
+        if (!isRecord(meta)) {
+            return false;
+        }
+        const element = meta.element;
+        if (isRecord(element) && element.__type === 'Reference') {
+            return typeof element.__value === 'string' && ids.has(element.__value);
+        }
+        return true;
+    });
+}
+
+function collectIds(value: unknown, ids: Set<string>): void {
+    if (Array.isArray(value)) {
+        for (const item of value) {
+            collectIds(item, ids);
+        }
+        return;
+    }
+    if (!isRecord(value)) {
+        return;
+    }
+    if (typeof value.__id === 'string') {
+        ids.add(value.__id);
+    }
+    for (const child of Object.values(value)) {
+        collectIds(child, ids);
+    }
 }
 
 function toSerializableAst(value: unknown): unknown {

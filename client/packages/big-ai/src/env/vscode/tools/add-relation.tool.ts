@@ -11,7 +11,7 @@ import { OutputChannel } from '@borkdominik-biguml/big-vscode/vscode';
 import { inject, injectable } from 'inversify';
 import * as vscode from 'vscode';
 import type { AddRelationInput, UmlRelationType } from '../../common/index.js';
-import { buildRelationRecord, NAMED_RELATION_TYPES } from './relation-serialization.js';
+import { buildRelationRecord } from './relation-serialization.js';
 import { createToolResult, resolveWorkspacePath, validateRequiredString, validateUmlDiagramFile } from './tool-utils.js';
 import { stringifyUmlDiagramFile } from './uml-file-format.js';
 
@@ -96,18 +96,9 @@ export class AddRelationTool implements vscode.LanguageModelTool<AddRelationInpu
             return createToolResult(`Error: No element named "${targetElementName}" found in ${filePath}`);
         }
 
-        // Try GLSP operation first so the diagram updates immediately
-        const elementTypeId = GLSP_EDGE_TYPE_ID[relationType];
-        const glspSuccess = await vscode.commands.executeCommand<boolean>(
-            'biguml.operations.createEdge', filePath, elementTypeId, sourceNode.__id, targetNode.__id,
-            NAMED_RELATION_TYPES.has(relationType) ? relationName : undefined
-        );
-        if (glspSuccess === true) {
-            this.outputChannel.appendLine(`[big-ai] Added ${relationType} from "${sourceElementName}" to "${targetElementName}" via GLSP operation`);
-            return createToolResult(`Added ${relationType} from "${sourceElementName}" to "${targetElementName}" in ${filePath}`);
-        }
-
-        // Fallback: write directly to file (diagram not open)
+        // Write directly to the file. (The live GLSP createEdge operation saved the diagram server's
+        // in-memory model, which silently discarded edits other tools had written straight to the file.
+        // The participant refreshes the open diagram after the whole edit batch instead.)
         const relation = buildRelationRecord({
             relationType,
             sourceId: sourceNode.__id,
