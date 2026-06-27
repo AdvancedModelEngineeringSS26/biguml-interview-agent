@@ -20,6 +20,8 @@ export interface ParsedCommand {
 
 export type InterviewPhase = 'scope' | 'entities' | 'relationships' | 'details' | 'confirmation' | 'generation';
 
+export type DiagramType = 'CLASS' | 'DEPLOYMENT';
+
 export interface InterviewRelationship {
     source: string;
     target: string;
@@ -30,16 +32,18 @@ export interface InterviewRelationship {
 export interface InterviewState {
     phase: InterviewPhase;
     filePath?: string;
-    diagramType: 'CLASS';
+    diagramType: DiagramType;
     scope?: string;
     entities: string[];
     relationships: InterviewRelationship[];
     details: string[];
     awaitingConfirmation: boolean;
-    confirmed: boolean;
+    pendingProposal?: ProposeDiagramInput;
 }
 
 export type UmlNodeType = 'Class' | 'AbstractClass' | 'Interface' | 'Enumeration' | 'Package' | 'DataType' | 'PrimitiveType';
+
+export type DeploymentNodeType = 'Artifact' | 'Device' | 'ExecutionEnvironment' | 'DeploymentNode' | 'DeploymentSpecification' | 'DeploymentPackage' | 'DeploymentModel';
 
 export type UmlRelationType =
     | 'Association' | 'Aggregation' | 'Composition'
@@ -47,9 +51,11 @@ export type UmlRelationType =
     | 'InterfaceRealization' | 'PackageImport' | 'PackageMerge'
     | 'Realization' | 'Substitution' | 'Usage';
 
+export type DeploymentRelationType = 'CommunicationPath' | 'Deployment' | 'Dependency' | 'Generalization' | 'Manifestation';
+
 export interface CreateUmlFileInput {
     filePath: string;
-    diagramType: 'CLASS';
+    diagramType: DiagramType;
 }
 
 export interface GenerateClassDiagramEntityInput {
@@ -82,6 +88,28 @@ export interface GenerateClassDiagramInput {
     entities: GenerateClassDiagramEntityInput[];
     relationships?: GenerateClassDiagramRelationshipInput[];
 }
+
+export interface GenerateDeploymentDiagramEntityInput {
+    name: string;
+    elementType: DeploymentNodeType;
+}
+
+export interface GenerateDeploymentDiagramRelationshipInput {
+    relationType: DeploymentRelationType;
+    sourceName: string;
+    targetName: string;
+}
+
+export interface GenerateDeploymentDiagramInput {
+    filePath: string;
+    diagramType: 'DEPLOYMENT';
+    entities: GenerateDeploymentDiagramEntityInput[];
+    relationships?: GenerateDeploymentDiagramRelationshipInput[];
+}
+
+export type ProposeDiagramInput = GenerateClassDiagramInput | GenerateDeploymentDiagramInput;
+
+export type ConfirmGenerationInput = Record<string, never>;
 
 export interface ReadUmlFileInput {
     filePath: string;
@@ -128,4 +156,3 @@ export interface RemoveRelationInput {
     targetName: string;
     relationType?: UmlRelationType;
 }
-

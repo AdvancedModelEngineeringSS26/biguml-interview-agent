@@ -15,9 +15,12 @@ import {
     AddClassMemberTool,
     AddNodeTool,
     AddRelationTool,
+    ConfirmGenerationTool,
     CreateUmlFileTool,
     DummyTool,
     GenerateClassDiagramTool,
+    ProposeDiagramTool,
+    GenerateDeploymentDiagramTool,
     ReadUmlFileTool,
     RemoveNodeTool,
     RemoveRelationTool
@@ -28,6 +31,9 @@ export function aiModule() {
         context.bind(ModelServerClient).toSelf().inSingletonScope();
         context.bind(DummyTool).toSelf().inSingletonScope();
         context.bind(GenerateClassDiagramTool).toSelf().inSingletonScope();
+        context.bind(GenerateDeploymentDiagramTool).toSelf().inSingletonScope();
+        context.bind(ProposeDiagramTool).toSelf().inSingletonScope();
+        context.bind(ConfirmGenerationTool).toSelf().inSingletonScope();
         context.bind(CreateUmlFileTool).toSelf().inSingletonScope();
         context.bind(ReadUmlFileTool).toSelf().inSingletonScope();
         context.bind(AddNodeTool).toSelf().inSingletonScope();

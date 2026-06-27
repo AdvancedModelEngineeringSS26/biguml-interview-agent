@@ -26,12 +26,12 @@ export const umlDeploymentDiagramModule = new FeatureModule((bind, unbind, isBou
     // configureModelElement(context, representationTypeId(R, DefaultTypes.NODE, 'Device'), GDeviceNode, GDeviceNodeView);
     configureModelElement(context, representationTypeId(R, DefaultTypes.NODE, 'ExecutionEnvironment'), NamedElement, NamedElementView);
     // configureModelElement(context, representationTypeId(R, DefaultTypes.NODE, 'ExecutionEnvironment'), GExecutionEnvironmentNode, GExecutionEnvironmentNodeView);
-    configureModelElement(context, representationTypeId(R, DefaultTypes.NODE, 'Model'), NamedElement, NamedElementView);
-    // configureModelElement(context, representationTypeId(R, DefaultTypes.NODE, 'Model'), GModelNode, GModelNodeView);
-    configureModelElement(context, representationTypeId(R, DefaultTypes.NODE, 'Node'), NamedElement, NamedElementView);
-    // configureModelElement(context, representationTypeId(R, DefaultTypes.NODE, 'Node'), GUmlNodeNode, GUmlNodeNodeView);
-    configureModelElement(context, representationTypeId(R, DefaultTypes.NODE, 'Package'), NamedElement, NamedElementView);
-    // configureModelElement(context, representationTypeId(R, DefaultTypes.NODE, 'Package'), GPackageNode, GPackageNodeView);
+    configureModelElement(context, representationTypeId(R, DefaultTypes.NODE, 'DeploymentModel'), NamedElement, NamedElementView);
+    // configureModelElement(context, representationTypeId(R, DefaultTypes.NODE, 'DeploymentModel'), GModelNode, GModelNodeView);
+    configureModelElement(context, representationTypeId(R, DefaultTypes.NODE, 'DeploymentNode'), NamedElement, NamedElementView);
+    // configureModelElement(context, representationTypeId(R, DefaultTypes.NODE, 'DeploymentNode'), GUmlNodeNode, GUmlNodeNodeView);
+    configureModelElement(context, representationTypeId(R, DefaultTypes.NODE, 'DeploymentPackage'), NamedElement, NamedElementView);
+    // configureModelElement(context, representationTypeId(R, DefaultTypes.NODE, 'DeploymentPackage'), GPackageNode, GPackageNodeView);
     configureModelElement(context, representationTypeId(R, DefaultTypes.NODE, 'Property'), NamedElement, NamedElementView);
     // configureModelElement(context, representationTypeId(R, DefaultTypes.NODE, 'Property'), GPropertyNode, GPropertyNodeView);
     configureModelElement(context, representationTypeId(R, DefaultTypes.NODE, 'PropertyType'), GEditableLabel, GEditableLabelView);
