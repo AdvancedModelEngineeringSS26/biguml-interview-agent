@@ -224,11 +224,54 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
     }
 
     protected hasClassOrInterfaceDeclaration(prompt: string): boolean {
-        return /\b(class|classes|interface|interfaces|abstract|abstract class)\b/i.test(prompt);
+        const text = prompt.trim();
+        if (!text) return false;
+
+        if (/^[^\S\r\n]*[A-Za-z][^:\n]{0,40}\s*(?::|-)/m.test(text)) {
+            return true;
+        }
+
+        if (/^\s*([-*\u2022]|\d+\.)\s+/m.test(text)) {
+            const items = text
+                .split(/\r?\n/)
+                .map(l => l.replace(/^\s*([-*\u2022]|\d+\.)\s+/, '').trim())
+                .filter(Boolean);
+            if (items.length >= 2) return true;
+        }
+
+        const commaParts = text.split(/,|;/).map(s => s.trim()).filter(Boolean);
+        if (commaParts.length >= 2) {
+            const candidateCount = commaParts.filter(p => /[A-Za-z0-9_]/.test(p)).length;
+            if (candidateCount >= 2) return true;
+        }
+
+        if (/\b(class|classes|interface|interfaces|abstract|abstract class)\b/i.test(text)) {
+            return true;
+        }
+
+        const namedTypes = text.match(/\b[A-Z][A-Za-z0-9_]*\b/g) ?? [];
+        if (namedTypes.length >= 2) return true;
+
+        return false;
     }
 
     protected hasRelationshipSignal(prompt: string): boolean {
-        return /\b(relationship|relates? to|association|aggregation|composition|inheritance|extends|implements|depends on|uses|contains|has|teaches|enrolls? in|owned by|part of)\b/i.test(prompt);
+        const text = prompt.trim();
+        if (!text) return false;
+
+        if (/^[^\S\r\n]*[A-Za-z][^:\n]{0,40}\s*(?::|-)/m.test(text) && /\b(relat|connect|communicat|depend|link|assoc|aggregate|compose|inherit|extend|implement|use|call|send|path|route)\b/i.test(text)) {
+            return true;
+        }
+
+        if (/->|<-|<->/.test(text)) return true;
+
+        if (/\([^()]{2,20}\)/.test(text) && /\b[A-Z][A-Za-z0-9_]*\b\s+\b[A-Z][A-Za-z0-9_]*\b/.test(text)) return true;
+
+        if (/\b[A-Z][A-Za-z0-9_]*\b\s+\b[A-Z][A-Za-z0-9_]*\b(\s*\([^)]*\))?/.test(text)) return true;
+
+        if (/\b(connects?|connected to|calls?|sends?|communicat(?:e|es|ed)|talks? to|relates? to|depends on|uses|contains|associat(?:e|es|ed))\b/i.test(text)) return true;
+
+        return false;
     }
 
     protected hasMultiplicitySignal(prompt: string): boolean {
@@ -484,7 +527,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         let skipAheadCount = 0;
 
         if (genuineAnswer && this.sessionManager.isActive && !skipApplied) {
-            skipAheadCount = await this.runSkipAheadDetection(model, request.prompt, token);
+            skipAheadCount = this.runSkipAheadDetection(request.prompt);
         }
 
         if (genuineAnswer && this.sessionManager.isActive && skipAheadCount === 0 && !skipApplied) {
@@ -733,21 +776,17 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         };
     }
 
-    protected async generateStepSummary(
-        _model: vscode.LanguageModelChat,
+    protected generateStepSummary(
         stepTitle: string,
-        userAnswer: string,
-        _token: vscode.CancellationToken
-    ): Promise<string> {
+        userAnswer: string
+    ): string {
         const normalized = this.normalizeStepSummary(userAnswer);
         return normalized || stepTitle;
     }
 
-    protected async runSkipAheadDetection(
-        model: vscode.LanguageModelChat,
-        content: string,
-        token: vscode.CancellationToken
-    ): Promise<number> {
+    protected runSkipAheadDetection(
+        content: string
+    ): number {
         const stepsAnswered = this.analyzeSkipAhead(content);
         const currentStep = this.sessionManager.currentStepNumber; 
 
@@ -765,7 +804,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         for (const stepNumber of stepsToProcess) {
             if (this.sessionManager.currentStepNumber !== stepNumber) break;
             const stepTitle = this.sessionManager.currentStep?.definition.title ?? '';
-            const summary = await this.generateStepSummary(model, stepTitle, content, token);
+            const summary = this.generateStepSummary(stepTitle, content);
             this.sessionManager.completeCurrentStep(summary);
             this.sessionManager.advanceToNextStep();
         }
@@ -972,6 +1011,13 @@ Use only confirmed information from the transcript. Include relationships after 
 
         const interviewMatch = normalizedPrompt.match(COMMAND_PATTERNS.interview);
         if (interviewMatch) {
+            if (this.sessionManager.isActive) {
+                return {
+                    type: 'default',
+                    argument: interviewMatch[1] || ''
+                };
+            }
+
             return {
                 type: 'interview',
                 argument: interviewMatch[1] || ''
@@ -1167,16 +1213,16 @@ Use only confirmed information from the transcript. Include relationships after 
         const isOnStep6 = stepNumber === 6;
 
         const toolRule = isOnStep6
-            ? 'The user confirmed the diagram on the previous turn. Call `biguml-generate-class-diagram` exactly once with ALL confirmed information from the transcript. This tool creates the .uml file and all nodes, members, and relationships in one call. Do not read the file first.'
+            ? 'The user confirmed the diagram on the previous turn. Call `biguml-generate-class-diagram` exactly once with all confirmed information. Do not read the file first.'
             : isOnStep5
-            ? 'DO NOT call any tools on this turn. Show a diagram-focused summary of what is known so far: scope, entities, classes, relationships, multiplicities, and any additional details already confirmed. Say clearly that step 5 cannot be skipped. Then ask the user to accept the summary or request a revision. Do not ask about later steps.'
+            ? 'DO NOT call any tools on this turn. Show a diagram-focused summary of what is known so far, say that step 5 cannot be skipped, and ask the user to accept the summary or request a revision.'
             : stepNumber === 2
-            ? 'DO NOT call any tools on this turn. Ask exactly one question about the specific class and interface names only. If the user already listed names, briefly acknowledge them and ask whether any are abstract or interfaces. Do NOT ask about relationships, multiplicities, attributes, or operations.'
+            ? 'DO NOT call any tools on this turn. Ask exactly one question about the specific class and interface names only. If names are already listed, briefly acknowledge them and ask whether any are abstract or interfaces.'
             : stepNumber === 3
-            ? 'DO NOT call any tools on this turn. Ask exactly one question about relationships between the classes only. Do NOT ask about class names, multiplicities, attributes, or operations.'
+            ? 'DO NOT call any tools on this turn. Ask exactly one question about relationships between the classes only. Do not ask about multiplicities, attributes, operations, or the target .uml file yet.'
             : stepNumber === 4
-            ? 'DO NOT call any tools on this turn. Ask exactly one question about multiplicities and any remaining attributes or operations only. Do NOT revisit scope, class names, or relationship types.'
-            : 'DO NOT call any tools on this turn. Ask exactly one question scoped to this step. Do not ask about content that belongs to a later step.';
+            ? 'DO NOT call any tools on this turn. Ask exactly one question about multiplicities and any remaining attributes or operations only. If everything else is already known, use this turn to ask for the target .uml file path as the final missing item.'
+            : 'DO NOT call any tools on this turn. Ask exactly one question scoped to this step.';
 
         return `## Interview Session — Step ${stepNumber} of 6
 
@@ -1185,7 +1231,7 @@ Use only confirmed information from the transcript. Include relationships after 
 **Step scope instruction**: ${step.definition.scopeHint}
 
 ${this.sessionManager.buildPriorStepsContext()}
-**IMPORTANT — do NOT repeat the step number or title in your response.** The extension already displays "Step ${stepNumber} of 6 — ${step.definition.title}" as a fixed header above your message. Starting your reply with a similar heading would duplicate it.
+**IMPORTANT — do NOT repeat the step number or title in your response.** The extension already displays "Step ${stepNumber} of 6 — ${step.definition.title}" above your message.
 
 **Tools this turn**: ${isOnStep6 ? '`biguml-generate-class-diagram`' : 'none'}
 
@@ -1194,7 +1240,7 @@ ${toolRule}
 ## Chat History Transcript
 Use this as the source of truth for requirements collected so far. Do not invent missing information.
 If the last user message is a .uml path, treat it as the target file only — not as attribute or operation detail.
-When summarizing step 5, keep it to one compact paragraph or short bullet list and omit any file-path discussion unless the user explicitly supplied one.
+When summarizing step 5, keep it compact and omit file-path discussion unless the user explicitly supplied one.
 Short acknowledgements (yes, ok, sure, use those, sounds good) confirm the concrete items proposed in the immediately preceding assistant turn.
 
 ${this.buildInterviewTranscript(context)}`;
@@ -1258,7 +1304,7 @@ ${this.buildInterviewTranscript(context)}`;
 
         const stateRule = interviewState.awaitingConfirmation
             ? 'A complete proposal has already been shown to the user. If the user approves in any wording, call biguml-confirm-generation (no arguments). If the user requests any change, call biguml-propose-diagram again with the corrected specification. Otherwise answer their question or ask one clarifying question. Do not write the summary yourself.'
-            : 'No proposal has been shown yet. Continue the interview by asking exactly one clear question, or call biguml-propose-diagram once scope, entities, relationships, details, and the target .uml file are all known. Do not call biguml-confirm-generation. You may offer concrete suggestions, but label them as suggestions the user can accept or change.';
+            : 'No proposal has been shown yet. Continue the interview by asking exactly one clear question, or call biguml-propose-diagram once scope, entities, relationships, details, and the target .uml file are all known. The target .uml file is the last missing item, not an early-step question. Do not call biguml-confirm-generation. You may offer concrete suggestions, but label them as suggestions the user can accept or change.';
 
         return `## Interview State
 - Phase: ${interviewState.phase}
@@ -1292,6 +1338,7 @@ ${this.buildInterviewTranscript(context)}`;
                     You are guiding the user through a fixed 6-step UML class diagram interview.
                     Each step has a strict scope — do not ask about content belonging to a later step.
                     Ask exactly one focused question per response.
+                    Do not ask for the target .uml file path until the end of the interview, after relationships, multiplicities, attributes, and operations have been collected.
                     Do not offer examples that require multiple answers.`
                 : `## Interview Mode Activation
                     You are in INTERVIEW mode. Your goals:
@@ -1299,7 +1346,8 @@ ${this.buildInterviewTranscript(context)}`;
                     2. Ask exactly one clarifying question per assistant response when information is missing.
                     3. Avoid compound prompts such as multiple bullet questions or several alternatives that all need answers.
                     4. Show the required summary before generation.
-                    5. Generate only after explicit confirmation of a previous summary.`,
+                    5. Ask for the target .uml file path only after the other requirements are known.
+                    6. Generate only after explicit confirmation of a previous summary.`,
 
             modify: `## Modification Mode Activation
                     You are in MODIFY mode. Your goals:

@@ -77,7 +77,7 @@
         "commands": [
           {
             "name": "interview",
-            "description": "Gather requirements and generate a UML class diagram after confirmation"
+            "description": "Gather requirements and generate a UML diagram after confirmation"
           },
           {
             "name": "modify",
@@ -399,9 +399,96 @@
         }
       },
       {
+        "name": "biguml-generate-deployment-diagram",
+        "displayName": "Generate UML Deployment Diagram",
+        "modelDescription": "Generates a complete UML deployment diagram in deterministic order. Use this after /interview confirmation instead of calling create/add-node/add-relation separately.",
+        "canBeReferencedInPrompt": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "filePath": {
+              "type": "string",
+              "description": "Workspace-relative path for the generated .uml file"
+            },
+            "diagramType": {
+              "type": "string",
+              "enum": [
+                "DEPLOYMENT"
+              ],
+              "description": "The type of UML diagram to generate"
+            },
+            "entities": {
+              "type": "array",
+              "description": "All confirmed deployment diagram entities.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "Entity name"
+                  },
+                  "elementType": {
+                    "type": "string",
+                    "enum": [
+                      "Artifact",
+                      "Device",
+                      "ExecutionEnvironment",
+                      "DeploymentNode",
+                      "DeploymentSpecification",
+                      "DeploymentPackage",
+                      "DeploymentModel"
+                    ],
+                    "description": "UML element type"
+                  }
+                },
+                "required": [
+                  "name",
+                  "elementType"
+                ]
+              }
+            },
+            "relationships": {
+              "type": "array",
+              "description": "All confirmed relationships between generated entities.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "relationType": {
+                    "type": "string",
+                    "enum": [
+                      "CommunicationPath",
+                      "Deployment",
+                      "Dependency",
+                      "Generalization",
+                      "Manifestation"
+                    ]
+                  },
+                  "sourceName": {
+                    "type": "string"
+                  },
+                  "targetName": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "relationType",
+                  "sourceName",
+                  "targetName"
+                ]
+              }
+            }
+          },
+          "required": [
+            "filePath",
+            "diagramType",
+            "entities"
+          ]
+        }
+      },
+      {
         "name": "biguml-propose-diagram",
         "displayName": "Propose UML Diagram",
-        "modelDescription": "Presents the complete proposed class diagram to the user for confirmation. Call this once every requirement (scope, entities, relationships, details, target .uml file) is known. The extension renders the summary from this input — do not write the summary yourself. This does not modify any file.",
+        "modelDescription": "Presents the complete proposed diagram (class or deployment) to the user for confirmation. Call this once every requirement (scope, entities, relationships, details, target .uml file) is known. The extension renders the summary from this input — do not write the summary yourself. This does not modify any file.",
         "canBeReferencedInPrompt": false,
         "inputSchema": {
           "type": "object",
@@ -413,13 +500,14 @@
             "diagramType": {
               "type": "string",
               "enum": [
-                "CLASS"
+                "CLASS",
+                "DEPLOYMENT"
               ],
               "description": "The type of UML diagram to generate"
             },
             "entities": {
               "type": "array",
-              "description": "All confirmed class diagram entities. Include properties and operations under their owning entity.",
+              "description": "All confirmed diagram entities. For CLASS diagrams use class element types and include properties/operations under their owning entity. For DEPLOYMENT diagrams use deployment node types (properties/operations do not apply).",
               "items": {
                 "type": "object",
                 "properties": {
@@ -436,9 +524,16 @@
                       "Enumeration",
                       "Package",
                       "DataType",
-                      "PrimitiveType"
+                      "PrimitiveType",
+                      "Artifact",
+                      "Device",
+                      "ExecutionEnvironment",
+                      "DeploymentNode",
+                      "DeploymentSpecification",
+                      "DeploymentPackage",
+                      "DeploymentModel"
                     ],
-                    "description": "UML element type"
+                    "description": "UML element type. CLASS diagrams: Class, AbstractClass, Interface, Enumeration, Package, DataType, PrimitiveType. DEPLOYMENT diagrams: Artifact, Device, ExecutionEnvironment, DeploymentNode, DeploymentSpecification, DeploymentPackage, DeploymentModel."
                   },
                   "properties": {
                     "type": "array",
@@ -521,8 +616,12 @@
                       "PackageMerge",
                       "Realization",
                       "Substitution",
-                      "Usage"
-                    ]
+                      "Usage",
+                      "CommunicationPath",
+                      "Manifestation",
+                      "Deployment"
+                    ],
+                    "description": "Relationship type. CLASS diagrams use class relations (Association, Aggregation, Composition, Abstraction, Dependency, Generalization, InterfaceRealization, PackageImport, PackageMerge, Realization, Substitution, Usage). DEPLOYMENT diagrams use CommunicationPath, Manifestation, Deployment, Dependency, Generalization."
                   },
                   "sourceName": {
                     "type": "string"
@@ -580,7 +679,8 @@
             "diagramType": {
               "type": "string",
               "enum": [
-                "CLASS"
+                "CLASS",
+                "DEPLOYMENT"
               ],
               "description": "The type of UML diagram to create"
             }

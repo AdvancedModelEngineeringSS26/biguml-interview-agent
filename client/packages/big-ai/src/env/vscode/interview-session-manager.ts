@@ -64,7 +64,7 @@ export const INTERVIEW_STEP_DEFINITIONS: readonly InterviewStepDefinition[] = [
             'Do NOT ask about multiplicities or attribute details yet.',
         policy: {
             canSkip: true,
-            advancementSignals: ['relationship'],
+            advancementSignals: ['relationship', 'multiplicity-or-details'],
             summaryMode: 'none'
         }
     },
