@@ -41,10 +41,12 @@ interface UmlDiagramFile {
     metaInfos: MetaInfo[];
 }
 
+// Element types that have a visual position/size in the diagram
 const BOUNDED_TYPES = new Set<UmlNodeType>([
     'Class', 'AbstractClass', 'Interface', 'Enumeration', 'Package', 'DataType', 'PrimitiveType'
 ]);
 
+// Mapping from UmlNodeType to GLSP element type IDs
 const NODE_TYPE_ID: Record<UmlNodeType, string> = {
     Class: 'class__Class',
     AbstractClass: 'class__AbstractClass',
@@ -104,23 +106,17 @@ export class AddNodeTool implements vscode.LanguageModelTool<AddNodeInput> {
             return createToolResult(`Error: An element named "${elementName}" already exists in the diagram.`);
         }
 
+        // Compute position for the new node
         const positionCount = diagram.metaInfos.filter(m => m.__type === 'Position').length;
         const col = positionCount % 4;
         const row = Math.floor(positionCount / 4);
         const x = 50 + col * 220;
         const y = 50 + row * 160;
 
-        if (BOUNDED_TYPES.has(elementType)) {
-            const elementTypeId = NODE_TYPE_ID[elementType];
-            const glspSuccess = await vscode.commands.executeCommand<boolean>(
-                'biguml.operations.createNode', filePath, elementTypeId, elementName, x, y
-            );
-            if (glspSuccess === true) {
-                this.outputChannel.appendLine(`[big-ai] Added ${elementType} "${elementName}" via GLSP operation`);
-                return createToolResult(`Added ${elementType} "${elementName}" to ${filePath}`);
-            }
-        }
-
+        // Write directly to the file with deterministic ids. (The live GLSP createNode operation was used
+        // here before, but it persisted layout entries whose element reference was "undefined", which then
+        // crashed every later edit when the file was re-serialized. The participant refreshes the open
+        // diagram after the edit batch instead.)
         const id = generateId();
         const node = buildNode(elementType, id, elementName, properties);
         diagram.diagram.entities.push(node);
