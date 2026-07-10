@@ -11,19 +11,22 @@ import type { OnActivate, OnDispose } from '@borkdominik-biguml/big-vscode/vscod
 import { injectable } from 'inversify';
 import * as vscode from 'vscode';
 import { AI_PARTICIPANT_ID, UML_TOOL_NAMES, COMMAND_PATTERNS, SYSTEM_PROMPT } from '../common/index.js';
-import type { GenerateClassDiagramInput, InterviewPhase, InterviewState, ParsedCommand, ProposeDiagramInput } from '../common/tool-types.js';
+import type { CompleteInterviewStepInput, GenerateClassDiagramInput, InterviewPhase, InterviewState, ParsedCommand, ProposeDiagramInput } from '../common/tool-types.js';
 import { formatProposalSummary } from './proposal-summary.js';
 import { InterviewSessionManager, type StepAdvancementSignal, type InterviewStepPolicy } from './interview-session-manager.js';
 
-const MAX_HISTORY_TURNS = 10;
+const MAX_PROPOSAL_LOOKBACK_TURNS = 10;
+const HISTORY_TOKEN_BUDGET_FRACTION = 0.5;
 const NO_TOOL_NAMES: readonly string[] = [];
 const GENERATION_TOOL_NAMES = [UML_TOOL_NAMES.generateClassDiagram] as const;
+const STEP_COMPLETION_TOOL_NAMES = [UML_TOOL_NAMES.completeInterviewStep] as const;
 const INTERVIEW_TOOL_NAMES = [UML_TOOL_NAMES.readUmlFile, UML_TOOL_NAMES.proposeDiagram] as const;
 const CONFIRMATION_TOOL_NAMES = [
     UML_TOOL_NAMES.readUmlFile,
     UML_TOOL_NAMES.proposeDiagram,
     UML_TOOL_NAMES.confirmGeneration
 ] as const;
+type HistoryTurn = vscode.ChatRequestTurn | vscode.ChatResponseTurn;
 const STATUS_INTENT_PATTERNS: readonly RegExp[] = [
     /\bgive\s+me\s+(a\s+)?summary\b/i,
     /\bshow\s+me\s+(the\s+)?(plan|table|steps)\b/i,
@@ -45,7 +48,7 @@ function looksLikePlanningRequest(text: string): boolean {
 }
 
 function isGenuineAnswer(command: ParsedCommand, sessionActive: boolean): boolean {
-    return command.type === 'default' && sessionActive;
+    return sessionActive && (command.type === 'default' || (command.type === 'interview' && command.argument.trim().length > 0));
 }
 
 function looksLikeStatusRequest(text: string): boolean {
@@ -81,11 +84,31 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
     }
 
 
-    protected buildHistoryMessages(context: vscode.ChatContext): vscode.LanguageModelChatMessage[] {
-        const messages: vscode.LanguageModelChatMessage[] = [];
-        const recentHistory = context.history.slice(-MAX_HISTORY_TURNS);
+    protected async selectHistoryWindow(
+        context: vscode.ChatContext,
+        model: vscode.LanguageModelChat
+    ): Promise<HistoryTurn[]> {
+        const budget = Math.floor(model.maxInputTokens * HISTORY_TOKEN_BUDGET_FRACTION);
+        const selected: HistoryTurn[] = [];
+        let used = 0;
 
-        for (const turn of recentHistory) {
+        for (const turn of [...context.history].reverse()) {
+            const text = turn instanceof vscode.ChatRequestTurn ? turn.prompt : this.responseTurnText(turn);
+            const cost = (await model.countTokens(text)) * 2;
+            if (used + cost > budget && selected.length > 0) {
+                break;
+            }
+            used += cost;
+            selected.unshift(turn);
+        }
+
+        return selected;
+    }
+
+    protected buildHistoryMessages(history: readonly HistoryTurn[]): vscode.LanguageModelChatMessage[] {
+        const messages: vscode.LanguageModelChatMessage[] = [];
+
+        for (const turn of history) {
             if (turn instanceof vscode.ChatRequestTurn) {
                 messages.push(vscode.LanguageModelChatMessage.User(turn.prompt));
             } else if (turn instanceof vscode.ChatResponseTurn) {
@@ -118,11 +141,10 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         return result.trim();
     }
 
-    protected buildInterviewTranscript(context: vscode.ChatContext): string {
+    protected buildInterviewTranscript(history: readonly HistoryTurn[]): string {
         const lines: string[] = [];
-        const recentHistory = context.history.slice(-MAX_HISTORY_TURNS);
 
-        for (const turn of recentHistory) {
+        for (const turn of history) {
             if (turn instanceof vscode.ChatRequestTurn) {
                 lines.push(`User: ${turn.prompt}`);
                 continue;
@@ -362,9 +384,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
     ): Promise<{ advanced: boolean; generationConfirmed: boolean; summary?: string }> {
         const parsed = this.sessionManager.applyStepInput(3, prompt);
         const summary = parsed.summary || 'Relationships identified';
-        this.sessionManager.completeCurrentStep(summary);
-        this.sessionManager.advanceToNextStep();
-        return { advanced: true, generationConfirmed: false, summary };
+        return { advanced: false, generationConfirmed: false, summary };
     }
 
     protected async handleDetailStep(
@@ -525,6 +545,9 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         let stepAdvancedThisTurn = false;
         let generationConfirmedThisTurn = false;
         let skipAheadCount = 0;
+        let responseStreamed = false;
+        let step3CompletionPending = false;
+        let step3FallbackSummary: string | undefined;
 
         if (genuineAnswer && this.sessionManager.isActive && !skipApplied) {
             skipAheadCount = this.runSkipAheadDetection(request.prompt);
@@ -532,22 +555,22 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
 
         if (genuineAnswer && this.sessionManager.isActive && skipAheadCount === 0 && !skipApplied) {
             const stepNum = this.sessionManager.currentStepNumber;
-            const stepPolicy = this.sessionManager.currentStep?.definition.policy;
-            const shouldAdvance = this.shouldAdvanceCurrentStep(stepPolicy, request.prompt);
 
             const isOnStep5 = stepNum === 5;
             const isConfirmation = this.sessionManager.isConfirmationAnswer(request.prompt);
 
             this.outputChannel.appendLine(`[big-ai] Genuine answer for step ${stepNum}, confirmation=${isConfirmation}`);
-
             if (isOnStep5 && !isConfirmation) {
                 this.outputChannel.appendLine('[big-ai] Step 5: non-confirmation answer, holding on step 5');
-            } else if (stepNum <= 4 && !shouldAdvance) {
-                this.outputChannel.appendLine(`[big-ai] Step ${stepNum}: prompt not specific enough, holding on current step`);
             } else {
                 const stepResult = await this.handleStepTurn(stepNum, request.prompt, model, token);
                 stepAdvancedThisTurn = stepResult.advanced;
                 generationConfirmedThisTurn = stepResult.generationConfirmed;
+
+                if (stepNum === 3) {
+                    step3CompletionPending = true;
+                    step3FallbackSummary = stepResult.summary;
+                }
 
                 if (stepResult.summary) {
                     this.outputChannel.appendLine(`[big-ai] Step ${stepNum} summary: ${stepResult.summary}`);
@@ -557,15 +580,33 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                     this.outputChannel.appendLine('[big-ai] Step 5 confirmed — generation runs on step 6 this turn');
                 }
 
-                this.outputChannel.appendLine(`[big-ai] Advanced to step ${this.sessionManager.currentStepNumber}`);
+                if (stepResult.advanced) {
+                    this.outputChannel.appendLine(`[big-ai] Advanced to step ${this.sessionManager.currentStepNumber}`);
+                }
             }
+        }
+
+        if (
+            step3CompletionPending
+            && !stepAdvancedThisTurn
+            && this.sessionManager.isActive
+            && this.sessionManager.currentStepNumber === 3
+        ) {
+            const summary = step3FallbackSummary?.trim() || this.sessionManager.currentStep?.definition.title || 'Relationships identified';
+            this.outputChannel.appendLine('[big-ai] Step 3 fallback: advancing after relationship summary without tool call');
+            this.sessionManager.completeCurrentStep(summary);
+            this.sessionManager.advanceToNextStep();
+            stepAdvancedThisTurn = true;
         }
 
         const stepNum = this.sessionManager.currentStepNumber;
         const isOnStep6 = this.sessionManager.isActive && stepNum === 6;
+        const isOnStep3 = this.sessionManager.isActive && stepNum === 3;
 
         const allowedToolNames: readonly string[] = isOnStep6
             ? GENERATION_TOOL_NAMES
+            : isOnStep3
+                ? STEP_COMPLETION_TOOL_NAMES
             : !this.sessionManager.isActive
                 ? (interviewState.awaitingConfirmation ? CONFIRMATION_TOOL_NAMES : INTERVIEW_TOOL_NAMES)
                 : NO_TOOL_NAMES;
@@ -582,19 +623,17 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
             stream.markdown(this.sessionManager.buildStepHeader());
         }
 
-        const historyMessages = this.buildHistoryMessages(context);
+        const historyWindow = await this.selectHistoryWindow(context, model);
+        const historyMessages = this.buildHistoryMessages(historyWindow);
         const userMessagePrompt = skipApplied ? 'Please continue with the next interview step.' : undefined;
 
         const messages: vscode.LanguageModelChatMessage[] = [
-            vscode.LanguageModelChatMessage.User(
-                this.buildSystemMessage(request, context, parsedCommand, interviewState)
-            ),
+            vscode.LanguageModelChatMessage.User(this.buildSystemMessage(request, parsedCommand, interviewState, historyWindow)),
             ...historyMessages,
             vscode.LanguageModelChatMessage.User(this.buildUserMessage(request, parsedCommand, userMessagePrompt))
         ];
 
         let toolUsed = false;
-        let responseStreamed = false;
         let streamedText = '';
         let presentedProposal: ProposeDiagramInput | undefined;
         let generated = false;
@@ -705,6 +744,38 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
                         responseStreamed = true;
                     }
                     generated = true;
+                    break;
+                }
+
+                const completeStepCall = toolCalls.find(call => call.name === UML_TOOL_NAMES.completeInterviewStep);
+                if (completeStepCall) {
+                    toolUsed = true;
+                    const completeInput = completeStepCall.input as CompleteInterviewStepInput;
+                    const summary = completeInput.summary?.trim() || this.sessionManager.currentStep?.definition.title || 'Step completed';
+
+                    this.outputChannel.appendLine(
+                        `[big-ai] Step completion received for step ${completeInput.stepNumber ?? this.sessionManager.currentStepNumber}`
+                    );
+
+                    const toolResult = await vscode.lm.invokeTool(
+                        UML_TOOL_NAMES.completeInterviewStep,
+                        {
+                            input: completeInput as unknown as object,
+                            toolInvocationToken: request.toolInvocationToken
+                        },
+                        token
+                    );
+
+                    this.sessionManager.completeCurrentStep(summary);
+                    this.sessionManager.advanceToNextStep();
+                    stepAdvancedThisTurn = true;
+
+                    messages.push(
+                        vscode.LanguageModelChatMessage.User([
+                            new vscode.LanguageModelToolResultPart(completeStepCall.callId, toolResult.content)
+                        ])
+                    );
+
                     break;
                 }
 
@@ -947,6 +1018,10 @@ Use only confirmed information from the transcript. Include relationships after 
         }
 
         const parsed = this.parseJsonObject(text) as Partial<GenerateClassDiagramInput>;
+        const requestedTargetFile = this.sessionManager.session?.draft.targetFile?.trim();
+        if (requestedTargetFile && !parsed.filePath?.trim()) {
+            parsed.filePath = requestedTargetFile;
+        }
         if (!parsed.filePath || !parsed.filePath.trim()) {
             parsed.filePath = this.buildDefaultDiagramFilePath();
         }
@@ -1163,7 +1238,7 @@ Use only confirmed information from the transcript. Include relationships after 
     }
 
     protected findPendingProposal(context: vscode.ChatContext): ProposeDiagramInput | undefined {
-        const recentHistory = context.history.slice(-MAX_HISTORY_TURNS);
+        const recentHistory = context.history.slice(-MAX_PROPOSAL_LOOKBACK_TURNS);
         for (const turn of [...recentHistory].reverse()) {
             if (!(turn instanceof vscode.ChatResponseTurn)) {
                 continue;
@@ -1199,11 +1274,11 @@ Use only confirmed information from the transcript. Include relationships after 
         return 'details';
     }
 
-    protected buildInterviewStateInstruction(context: vscode.ChatContext, interviewState: InterviewState): string {
+    protected buildInterviewStateInstruction(history: readonly HistoryTurn[], interviewState: InterviewState): string {
         const session = this.sessionManager.session;
 
         if (!session?.isActive) {
-            return this.buildLegacyInterviewStateInstruction(context, interviewState);
+            return this.buildLegacyInterviewStateInstruction(history, interviewState);
         }
 
         const stepIndex = session.currentStepIndex;
@@ -1219,9 +1294,9 @@ Use only confirmed information from the transcript. Include relationships after 
             : stepNumber === 2
             ? 'DO NOT call any tools on this turn. Ask exactly one question about the specific class and interface names only. If names are already listed, briefly acknowledge them and ask whether any are abstract or interfaces.'
             : stepNumber === 3
-            ? 'DO NOT call any tools on this turn. Ask exactly one question about relationships between the classes only. Do not ask about multiplicities, attributes, operations, or the target .uml file yet.'
+            ? 'Ask exactly one question about relationships between the classes only. Do not ask for the target .uml file path on this turn. After the user has enough relationship information, call `biguml-complete-interview-step` with stepNumber 3 and a concise summary of the relationships. Do not ask for confirmation or wait for a yes/no answer.'
             : stepNumber === 4
-            ? 'DO NOT call any tools on this turn. Ask exactly one question about multiplicities and any remaining attributes or operations only. If everything else is already known, use this turn to ask for the target .uml file path as the final missing item.'
+            ? 'DO NOT call any tools on this turn. Ask exactly one question about multiplicities and any remaining attributes or operations only. Only ask for the target .uml file path here if it has not already been provided.'
             : 'DO NOT call any tools on this turn. Ask exactly one question scoped to this step.';
 
         return `## Interview Session — Step ${stepNumber} of 6
@@ -1233,7 +1308,7 @@ Use only confirmed information from the transcript. Include relationships after 
 ${this.sessionManager.buildPriorStepsContext()}
 **IMPORTANT — do NOT repeat the step number or title in your response.** The extension already displays "Step ${stepNumber} of 6 — ${step.definition.title}" above your message.
 
-**Tools this turn**: ${isOnStep6 ? '`biguml-generate-class-diagram`' : 'none'}
+**Tools this turn**: ${isOnStep6 ? '`biguml-generate-class-diagram`' : stepNumber === 3 ? '`biguml-complete-interview-step`' : 'none'}
 
 ${toolRule}
 
@@ -1243,7 +1318,7 @@ If the last user message is a .uml path, treat it as the target file only — no
 When summarizing step 5, keep it compact and omit file-path discussion unless the user explicitly supplied one.
 Short acknowledgements (yes, ok, sure, use those, sounds good) confirm the concrete items proposed in the immediately preceding assistant turn.
 
-${this.buildInterviewTranscript(context)}`;
+${this.buildInterviewTranscript(history)}`;
     }
 
     protected isConfirmationTurn(context: vscode.ChatContext, prompt: string): boolean {
@@ -1271,7 +1346,7 @@ ${this.buildInterviewTranscript(context)}`;
     }
 
     protected previousAssistantRequestedGeneration(context: vscode.ChatContext): boolean {
-        const recentHistory = context.history.slice(-MAX_HISTORY_TURNS);
+        const recentHistory = context.history.slice(-MAX_PROPOSAL_LOOKBACK_TURNS);
 
         for (const turn of [...recentHistory].reverse()) {
             if (!(turn instanceof vscode.ChatResponseTurn)) {
@@ -1294,10 +1369,7 @@ ${this.buildInterviewTranscript(context)}`;
         return false;
     }
 
-    protected buildLegacyInterviewStateInstruction(
-        context: vscode.ChatContext,
-        interviewState: InterviewState
-    ): string {
+    protected buildLegacyInterviewStateInstruction(history: readonly HistoryTurn[], interviewState: InterviewState): string {
         const availableTools = interviewState.awaitingConfirmation
             ? 'readUmlFile, proposeDiagram, confirmGeneration'
             : 'readUmlFile, proposeDiagram';
@@ -1321,14 +1393,14 @@ When summarizing step 5, keep it short and do not mention missing information or
 Only generate attributes or operations that the user explicitly named, explicitly accepted from the previous assistant suggestion, or explicitly requested no details.
 Short acknowledgements such as yes, ok, sure, use those, that works, and sounds good confirm the concrete items suggested in the immediately preceding assistant turn.
 
-${this.buildInterviewTranscript(context)}`;
+${this.buildInterviewTranscript(history)}`;
     }
 
     protected buildSystemMessage(
         request: vscode.ChatRequest,
-        context: vscode.ChatContext,
         command: ParsedCommand,
-        interviewState: InterviewState
+        interviewState: InterviewState,
+        history: readonly HistoryTurn[]
     ): string {
         const sessionIsActive = this.sessionManager.session?.isActive === true;
 
@@ -1398,7 +1470,7 @@ ${modeContext}
 
 ---
 
-${this.buildInterviewStateInstruction(context, interviewState)}
+${this.buildInterviewStateInstruction(history, interviewState)}
 
 ---
 

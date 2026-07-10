@@ -129,6 +129,7 @@ export interface DiagramDraft {
     entities: string[];
     relationships: string[];
     details: string[];
+    targetFile?: string;
     pendingRequestedChange?: string;
 }
 
@@ -175,6 +176,7 @@ export class InterviewSessionManager {
             firstResponseSent: false,
             autoCompletedSteps: [],
             draft: {
+                targetFile: undefined,
                 entities: [],
                 relationships: [],
                 details: []
@@ -256,6 +258,12 @@ export class InterviewSessionManager {
             const details = this.extractDetailCandidates(normalizedInput);
             if (details.length > 0) {
                 this.mergeUnique(draft.details, details);
+                applied = true;
+            }
+
+            const targetFile = this.extractTargetDiagramFilePath(normalizedInput);
+            if (targetFile) {
+                draft.targetFile = targetFile;
                 applied = true;
             }
         }
@@ -604,6 +612,10 @@ export class InterviewSessionManager {
         lines.push(`**Relationships:** ${relationships || 'Not yet specified'}`);
         lines.push(`**Multiplicity / details:** ${details || 'Not yet specified'}`);
 
+        if (draft.targetFile) {
+            lines.push(`**Target file:** ${draft.targetFile}`);
+        }
+
         if (draft.pendingRequestedChange) {
             lines.push(`**Latest requested change:** ${draft.pendingRequestedChange}`);
         }
@@ -629,6 +641,11 @@ export class InterviewSessionManager {
 
     buildCompletionTable(): string {
         return this.buildProgressSummary();
+    }
+
+    private extractTargetDiagramFilePath(text: string): string | undefined {
+        const match = text.match(/\b([^\s,;:()]+\.uml)\b/i);
+        return match?.[1]?.trim();
     }
 
     buildPriorStepsContext(): string {

@@ -11,6 +11,11 @@ export interface DummyToolInput {
     message: string;
 }
 
+export interface CompleteInterviewStepInput {
+    stepNumber: number;
+    summary?: string;
+}
+
 export type CommandType = 'interview' | 'modify' | 'explain' | 'plan' | 'default';
 
 export interface ParsedCommand {

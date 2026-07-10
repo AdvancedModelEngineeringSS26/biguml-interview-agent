@@ -13,6 +13,7 @@ export const AI_PARTICIPANT_FULL_NAME = 'bigUML Interview Agent';
 
 export const UML_TOOL_NAMES = {
     dummy: 'biguml-dummy-tool',
+  completeInterviewStep: 'biguml-complete-interview-step',
     generateClassDiagram: 'biguml-generate-class-diagram',
     proposeDiagram: 'biguml-propose-diagram',
     confirmGeneration: 'biguml-confirm-generation',
