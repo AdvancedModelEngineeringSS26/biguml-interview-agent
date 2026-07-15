@@ -10,10 +10,10 @@
 import type { OnActivate, OnDispose } from '@borkdominik-biguml/big-vscode/vscode';
 import { injectable } from 'inversify';
 import * as vscode from 'vscode';
-import { AI_PARTICIPANT_ID, UML_TOOL_NAMES, COMMAND_PATTERNS, SYSTEM_PROMPT } from '../common/index.js';
+import { AI_PARTICIPANT_ID, COMMAND_PATTERNS, SYSTEM_PROMPT, UML_TOOL_NAMES } from '../common/index.js';
 import type { CompleteInterviewStepInput, GenerateClassDiagramInput, InterviewPhase, InterviewState, ParsedCommand, ProposeDiagramInput } from '../common/tool-types.js';
+import { InterviewSessionManager, type InterviewStepPolicy, type StepAdvancementSignal } from './interview-session-manager.js';
 import { formatProposalSummary } from './proposal-summary.js';
-import { InterviewSessionManager, type StepAdvancementSignal, type InterviewStepPolicy } from './interview-session-manager.js';
 
 const MAX_PROPOSAL_LOOKBACK_TURNS = 10;
 const HISTORY_TOKEN_BUDGET_FRACTION = 0.5;
@@ -25,6 +25,15 @@ const CONFIRMATION_TOOL_NAMES = [
     UML_TOOL_NAMES.readUmlFile,
     UML_TOOL_NAMES.proposeDiagram,
     UML_TOOL_NAMES.confirmGeneration
+] as const;
+const MODIFY_TOOL_NAMES = [
+    UML_TOOL_NAMES.readUmlFile,
+    UML_TOOL_NAMES.createUmlFile,
+    UML_TOOL_NAMES.addNode,
+    UML_TOOL_NAMES.addClassMember,
+    UML_TOOL_NAMES.removeNode,
+    UML_TOOL_NAMES.addRelation,
+    UML_TOOL_NAMES.removeRelation
 ] as const;
 type HistoryTurn = vscode.ChatRequestTurn | vscode.ChatResponseTurn;
 const STATUS_INTENT_PATTERNS: readonly RegExp[] = [
@@ -602,14 +611,17 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         const stepNum = this.sessionManager.currentStepNumber;
         const isOnStep6 = this.sessionManager.isActive && stepNum === 6;
         const isOnStep3 = this.sessionManager.isActive && stepNum === 3;
+        const isModify = parsedCommand.type === 'modify' && !interviewState.awaitingConfirmation;
 
         const allowedToolNames: readonly string[] = isOnStep6
             ? GENERATION_TOOL_NAMES
             : isOnStep3
                 ? STEP_COMPLETION_TOOL_NAMES
-            : !this.sessionManager.isActive
-                ? (interviewState.awaitingConfirmation ? CONFIRMATION_TOOL_NAMES : INTERVIEW_TOOL_NAMES)
-                : NO_TOOL_NAMES;
+                : isModify
+                    ? MODIFY_TOOL_NAMES
+                    : !this.sessionManager.isActive
+                        ? (interviewState.awaitingConfirmation ? CONFIRMATION_TOOL_NAMES : INTERVIEW_TOOL_NAMES)
+                        : NO_TOOL_NAMES;
         const requireToolCalls = isOnStep6;
 
         this.outputChannel.appendLine(`[big-ai] Step: ${stepNum}, tools: [${allowedToolNames.join(', ')}]`);
@@ -640,7 +652,8 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
 
         try {
             let generationRetryRequested = false;
-            const maxGenerationIterations = 3;
+            // /modify applies several sequential edits (create nodes, then relate them), so it needs more rounds.
+            const maxGenerationIterations = isModify ? 8 : 3;
 
             for (let iteration = 0; iteration < maxGenerationIterations && !token.isCancellationRequested; iteration++) {
                 this.outputChannel.appendLine(`[big-ai] LM request iteration ${iteration + 1}/${maxGenerationIterations}`);
@@ -816,7 +829,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
             }
         }
 
-        
+
         this.sessionManager.markFirstResponseSent();
 
         if (this.sessionManager.isActive && this.sessionManager.currentStepNumber === 6) {
@@ -1274,11 +1287,15 @@ Use only confirmed information from the transcript. Include relationships after 
         return 'details';
     }
 
-    protected buildInterviewStateInstruction(history: readonly HistoryTurn[], interviewState: InterviewState): string {
+    protected buildInterviewStateInstruction(
+history: readonly HistoryTurn[],
+interviewState: InterviewState,
+        command: ParsedCommand
+): string {
         const session = this.sessionManager.session;
 
         if (!session?.isActive) {
-            return this.buildLegacyInterviewStateInstruction(history, interviewState);
+            return this.buildLegacyInterviewStateInstruction(history, interviewState, command);
         }
 
         const stepIndex = session.currentStepIndex;
@@ -1369,7 +1386,24 @@ ${this.buildInterviewTranscript(history)}`;
         return false;
     }
 
-    protected buildLegacyInterviewStateInstruction(history: readonly HistoryTurn[], interviewState: InterviewState): string {
+    protected buildLegacyInterviewStateInstruction(
+history: readonly HistoryTurn[],
+interviewState: InterviewState,
+        command: ParsedCommand
+    ): string {
+        const isModify = command.type === 'modify' && !interviewState.awaitingConfirmation;
+        if (isModify) {
+            return `## Modify State
+- Tools available this turn: readUmlFile, createUmlFile, addNode, addClassMember, removeNode, addRelation, removeRelation
+
+The user wants to change an existing diagram. Apply the change by calling the editing tools — do not just describe it. Pass the active diagram's workspace-relative filePath (shown in Context Information) to every edit tool. If you need the current contents, call biguml-read-uml-file first. Use addNode/addClassMember to add classes and members, removeNode/removeRelation to delete, and addRelation for associations; create all new nodes before relating them. You may batch several independent edits in one turn. Afterwards, briefly state in plain UML terms what you changed (the applied edits are surfaced to the user automatically).
+
+## Chat History Transcript
+Use this transcript as the source of truth for requirements. Do not invent missing requirements.
+
+${this.buildInterviewTranscript(history)}`;
+        }
+
         const availableTools = interviewState.awaitingConfirmation
             ? 'readUmlFile, proposeDiagram, confirmGeneration'
             : 'readUmlFile, proposeDiagram';
@@ -1422,18 +1456,7 @@ ${this.buildInterviewTranscript(history)}`;
                     6. Generate only after explicit confirmation of a previous summary.`,
 
             modify: `## Modification Mode Activation
-                    You are in MODIFY mode. Your goals:
-                    1. Identify specific issues or improvement opportunities
-                    2. Propose concrete, implementable solutions
-                    3. Provide before/after comparisons
-                    4. Include code examples where relevant
-                    5. Explain the benefits of each recommendation
-
-                    Format for suggestions:
-                    - Current Issue: [specific problem]
-                    - Recommendation: [solution]
-                    - Implementation: [how to apply]
-                    - Benefits: [why this helps]`,
+                    You are in MODIFY mode. Apply the user's requested changes to the active diagram by calling the editing tools (add/remove nodes, members and relations). Do not just describe the change — make it. Briefly confirm in plain UML terms what you changed.`,
 
             explain: `## Explanation Mode Activation
                     You are in EXPLAIN mode. Your goals:
@@ -1470,7 +1493,7 @@ ${modeContext}
 
 ---
 
-${this.buildInterviewStateInstruction(history, interviewState)}
+${this.buildInterviewStateInstruction(history, interviewState, command)}
 
 ---
 
