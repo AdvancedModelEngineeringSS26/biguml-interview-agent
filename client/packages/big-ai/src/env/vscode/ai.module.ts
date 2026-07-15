@@ -12,6 +12,7 @@ import { AiToolRegistry } from './ai-tool-registry.js';
 import { InterviewAgentParticipant } from './interview-agent.participant.js';
 import { ModelServerClient } from './model-server-client.js';
 import {
+    CompleteInterviewStepTool,
     AddClassMemberTool,
     AddNodeTool,
     AddRelationTool,
@@ -30,6 +31,7 @@ export function aiModule() {
     return new VscodeFeatureModule(context => {
         context.bind(ModelServerClient).toSelf().inSingletonScope();
         context.bind(DummyTool).toSelf().inSingletonScope();
+        context.bind(CompleteInterviewStepTool).toSelf().inSingletonScope();
         context.bind(GenerateClassDiagramTool).toSelf().inSingletonScope();
         context.bind(GenerateDeploymentDiagramTool).toSelf().inSingletonScope();
         context.bind(ProposeDiagramTool).toSelf().inSingletonScope();

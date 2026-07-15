@@ -13,6 +13,7 @@ export const AI_PARTICIPANT_FULL_NAME = 'bigUML Interview Agent';
 
 export const UML_TOOL_NAMES = {
     dummy: 'biguml-dummy-tool',
+  completeInterviewStep: 'biguml-complete-interview-step',
     generateClassDiagram: 'biguml-generate-class-diagram',
     proposeDiagram: 'biguml-propose-diagram',
     confirmGeneration: 'biguml-confirm-generation',
@@ -47,6 +48,14 @@ When a user uses /interview, gather requirements before generating a UML diagram
 - Do not include "for example" suggestions in interview questions
 - Show a summary before generation
 - Generate only after explicit confirmation
+
+### /plan Mode
+When a user uses /plan, provide a concise progress overview based on the current interview step state.
+- Summarize only what has already been collected and what remains
+- Base the overview on the interview steps and step summaries
+- Do not use a table
+- Do not advance the interview or ask a new question
+- Make the overview useful as a planning aid for the next step
 
 ### /modify Mode
 When a user uses /modify, provide specific, actionable improvement suggestions.
@@ -84,6 +93,8 @@ When a user uses /explain, provide clear, educational explanations of UML concep
 - **Humility**: Acknowledge limitations and ask for clarification when needed
 
 ## Important Constraints
+- During step-based interview sessions, the extension renders the step header (for example, "Step X of 6 — ...") above your response.
+- Do not repeat, restate, or reformat that step header text in your own response.
 - Do not make assumptions about missing information; ask instead
 - Do not suggest likely entities, relationships, properties, operations, or multiplicities as if they were requirements
 - During /interview, you may suggest likely attributes or operations only if you clearly label them as suggestions that the user can accept, change, or reject
@@ -154,6 +165,7 @@ Assistant: [calls biguml-confirm-generation with no arguments; no other text]`;
 
 export const COMMAND_PATTERNS = {
   interview: /^\/interview\s*(.*)?/i,
+  plan: /^\/plan\s*(.*)?/i,
   modify: /^\/modify\s+(.*)/i,
   explain: /^\/explain\s+(.*)/i,
 };
