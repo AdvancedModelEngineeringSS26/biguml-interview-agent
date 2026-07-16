@@ -19,7 +19,7 @@ import type {
     UmlVisibility
 } from '../../common/index.js';
 import { buildRelationRecord } from './relation-serialization.js';
-import { createToolResult, generateId, ref, resolveWorkspacePath, toParserSafeMultiplicity, validateRequiredString } from './tool-utils.js';
+import { createToolResult, generateId, ref, resolveWorkspacePath, toParserSafeMultiplicity, toParserSafeName, validateRequiredString } from './tool-utils.js';
 import { stringifyUmlDiagramFile } from './uml-file-format.js';
 
 interface UmlNode {
@@ -123,7 +123,7 @@ export class GenerateClassDiagramTool implements vscode.LanguageModelTool<Genera
             return createToolResult(`Error: ${e instanceof Error ? e.message : String(e)}`);
         }
 
-        const declaredNames = new Set(input.entities.map(entity => entity.name));
+        const declaredNames = new Set(input.entities.map(entity => toParserSafeName(entity.name)));
         const inferredClasses = diagram.diagram.entities
             .filter(node => node.__type === 'Class' && !declaredNames.has(node.name))
             .map(node => node.name);
@@ -211,7 +211,7 @@ function addNode(diagram: UmlDiagramFile, entity: GenerateClassDiagramEntityInpu
 
 function buildNode(elementType: UmlNodeType, id: string, name: string): UmlNode {
     const persistedType = elementType === 'AbstractClass' ? 'Class' : elementType;
-    return { __type: persistedType, __id: id, ...elementDefaults(elementType), name };
+    return { __type: persistedType, __id: id, ...elementDefaults(elementType), name: toParserSafeName(name) };
 }
 
 function elementDefaults(elementType: UmlNodeType): Record<string, unknown> {
@@ -243,7 +243,7 @@ function addProperty(
     const member: UmlClassMember = {
         __type: 'Property',
         __id: generateId(),
-        name: toParserSafeMemberName(validateRequiredString(property.name, 'property.name')),
+        name: toParserSafeMemberName(toParserSafeName(validateRequiredString(property.name, 'property.name'))),
         isDerived: false,
         isOrdered: false,
         isStatic: false,
@@ -273,7 +273,7 @@ function addOperation(
     owner.operations.push({
         __type: 'Operation',
         __id: generateId(),
-        name: toParserSafeMemberName(validateRequiredString(name, 'operation.name')),
+        name: toParserSafeMemberName(toParserSafeName(validateRequiredString(name, 'operation.name'))),
         visibility: visibility ?? 'PUBLIC',
         parameters: []
     });

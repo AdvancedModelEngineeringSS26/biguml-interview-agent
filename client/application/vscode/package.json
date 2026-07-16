@@ -223,13 +223,13 @@
         "key": "n",
         "mac": "n",
         "command": "bigUML.editor.enablePrimaryElementNavigator",
-        "when": "activeCustomEditorId == 'bigUML.diagramView' && bigUML.editorSelectedElementsAmount == 1"
+        "when": "activeCustomEditorId == 'bigUML.diagramView' && bigUML.editorSelectedElementsAmount == 1 && !inputFocus"
       },
       {
         "key": "alt+n",
         "mac": "alt+n",
         "command": "bigUML.editor.enableSecondaryElementNavigator",
-        "when": "activeCustomEditorId == 'bigUML.diagramView' && bigUML.editorSelectedElementsAmount == 1"
+        "when": "activeCustomEditorId == 'bigUML.diagramView' && bigUML.editorSelectedElementsAmount == 1 && !inputFocus"
       }
     ],
     "languageModelTools": [

@@ -12,6 +12,7 @@ import { inject, injectable } from 'inversify';
 import * as vscode from 'vscode';
 import type { RemoveRelationInput } from '../../common/index.js';
 import { createToolResult, resolveWorkspacePath, validateRequiredString, validateUmlDiagramFile } from './tool-utils.js';
+import { stringifyUmlDiagramFile } from './uml-file-format.js';
 
 interface UmlNode {
     __id: string;
@@ -94,7 +95,11 @@ export class RemoveRelationTool implements vscode.LanguageModelTool<RemoveRelati
         // Write directly to the file so the change isn't lost when the diagram server later saves its
         // in-memory model. The participant refreshes the open diagram after the edit batch.
         const [removed] = diagram.diagram.relations.splice(index, 1);
-        await vscode.workspace.fs.writeFile(uri, Buffer.from(JSON.stringify(diagram, null, '\t'), 'utf-8'));
+        try {
+            await vscode.workspace.fs.writeFile(uri, Buffer.from(stringifyUmlDiagramFile(diagram), 'utf-8'));
+        } catch (e) {
+            return createToolResult(`Error: ${e instanceof Error ? e.message : String(e)}`);
+        }
 
         this.outputChannel.appendLine(`[big-ai] Removed ${removed.__type} from "${sourceElementName}" to "${targetElementName}" (id: ${removed.__id}) via file write`);
         return createToolResult(`Removed ${removed.__type} from "${sourceElementName}" to "${targetElementName}" in ${filePath}`);
