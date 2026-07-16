@@ -115,6 +115,12 @@ Key design decisions:
   for edges (the create-edge handler resolves both endpoints and throws if either is missing), but that's
   incidental to how it builds references, not a deliberate validation layer, and node creation/deletion have
   no equivalent check — so this is at best a partial mitigation, not a fix.
+- **Human-readable names are lost (upstream grammar limit, issue #40).** The Langium `LANGIUM_ID` terminal
+  rejects spaces/dots, so `toParserSafeName()` slugs "Frontend Server" → `frontendServer`. This is a
+  pre-existing bigUML bug, not a `big-ai` one — the plain diagram editor's label-edit path corrupts files the
+  same way (no validator bound) — but `big-ai` hits it constantly, since an LLM naturally produces
+  human-readable names. A real fix needs a quoted-name terminal plus escaping in `tooling/uml-language*`, and
+  must also cover the reference terminal (`[Node:LANGIUM_ID]`), since names double as cross-reference keys.
 - **Deployment-diagram support is disconnected from the interview flow.** The system prompt, the
   `GenerateDeploymentDiagramTool`, and the `DeploymentNodeType`/`DeploymentRelationType` types all still
   exist and work if invoked directly, but the step-based `InterviewSessionManager` only has class-diagram
