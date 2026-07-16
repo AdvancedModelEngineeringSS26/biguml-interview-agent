@@ -1207,17 +1207,20 @@ Use only confirmed information from the transcript. Include relationships after 
             }
             return;
         }
+
+        const normalizedPath = filePath.toLowerCase().endsWith('.uml') ? filePath : `${filePath}.uml`;
         let uri: vscode.Uri | undefined;
         try {
-            uri = resolveWorkspacePath(filePath.toLowerCase().endsWith('.uml') ? filePath : `${filePath}.uml`);
+            uri = resolveWorkspacePath(normalizedPath);
         } catch {
             if (leadingMarkdown) {
                 stream.markdown(leadingMarkdown);
             }
             return;
         }
-        stream.markdown(`${leadingMarkdown}\n\n✓ Opened `);
-        stream.anchor(uri);
+
+        stream.markdown(`${leadingMarkdown}\n\n✔ Opened `);
+        stream.anchor(uri, normalizedPath);
         await this.openDiagram(uri);
     }
 
