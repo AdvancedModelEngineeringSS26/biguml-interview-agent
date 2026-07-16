@@ -90,6 +90,21 @@ from the manifest is never offered to the model).
   holds an API key or talks to a vendor directly. Vendor and model family are configurable via
   `bigUML.ai.modelVendor` / `bigUML.ai.modelFamily`, with a fallback to any model of the configured vendor
   when the requested family isn't installed (§2).
+- **Model choice turned out to matter more than expected — the agent is only as reliable as the model
+  driving it.** Cheaper models (e.g. GPT-4o) *can* produce good diagrams, but the higher-tier models (e.g.
+  Claude Sonnet) were noticeably more reliable in the parts of the flow that depend on disciplined
+  instruction-following rather than raw modelling ability: emitting a well-formed tool call instead of
+  hand-writing UML into the chat, respecting the "exactly one question per turn" rule, and honouring the
+  step-5 gate that forbids tool calls on the summary turn. Weaker models drift out of the protocol more
+  often, and because the extension deliberately doesn't trust model prose (§4), a model that ignores the
+  tool contract simply produces nothing.
+- **In practice most of the team could not choose a model at all.** GitHub Copilot changed its student
+  licensing during the project, which left most of us restricted to Copilot's **auto mode** — Copilot picks
+  the model per request and the extension takes what it is handed. This is a real limit on the settings
+  described in §2: `bigUML.ai.modelFamily` can only pin a family that the vendor actually exposes to
+  extensions, so under auto mode the setting has little or nothing to select from, and the effective model
+  may vary from request to request. It also undercuts the comparison above — it is part of why the
+  reliability observations are only our impressions, since we could not hold the model fixed across runs.
 - A deterministic follow-up provider (`provideFollowups`) that suggests next actions (accept/revise
   summary, add entities, show progress, etc.) as clickable chips under each response.
 
