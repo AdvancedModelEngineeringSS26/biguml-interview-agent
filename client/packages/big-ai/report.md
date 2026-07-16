@@ -29,12 +29,19 @@ Open **`client/`** as the VS Code workspace root (not the repo root), then Run a
 Extension**. The extension host opens `client/workspace/` as its scratch workspace. In the Chat panel, type
 `@biguml /interview` to start. After changing extension code, reload the extension host window (`Ctrl+R`).
 
-**Model selection.** The participant currently calls `vscode.lm.selectChatModels({ vendor: 'copilot' })` and
-takes the first model returned — whichever model Copilot Chat hands out is the model you get. There is no
-family filter and no in-extension model picker; to change models you change your Copilot Chat model
-selection. If Copilot is missing or unauthenticated the participant fails fast with a `MODEL_UNAVAILABLE`
-error rather than falling back to anything. The `bigUML.ai.modelVendor` / `bigUML.ai.modelFamily` settings
-declared in `application/vscode/package.json` are **not wired up** — see §6.
+**Model selection.** Two settings control which model the participant talks to:
+
+| Setting | Default | Effect |
+|---|---|---|
+| `bigUML.ai.modelVendor` | `copilot` | Which VS Code LM vendor to request a model from. |
+| `bigUML.ai.modelFamily` | *(empty)* | Preferred family, e.g. `gpt-4o` or `claude-3.5-sonnet`. Empty = any model of that vendor. |
+
+Resolution follows a fallback chain: if a family is configured, `selectModel()` asks for that exact
+`{ vendor, family }` pair; if the family isn't installed it falls back to any model of the configured vendor
+and logs the downgrade to the `big-ai` output channel. If the vendor has no models at all — Copilot missing
+or unauthenticated, in the default configuration — the participant fails fast with a `MODEL_UNAVAILABLE`
+error rather than silently substituting another vendor. Both settings live in
+`application/vscode/package.json` and are read in `interview-agent.participant.ts`.
 
 **Chat session target.** Keep the chat panel's **Set Session Target** on **Local**. `@biguml` is registered
 into the extension-hosted session, and participant stickiness only works there (see §5).
@@ -80,8 +87,9 @@ from the manifest is never offered to the model).
   and injected as labeled context messages; the currently-open `.uml` editor is auto-attached (with its
   workspace-relative path) so the model can act on "this diagram" without the user re-stating the path.
 - **Model access via the VS Code Language Model API** (`vscode.lm.selectChatModels`), so the package never
-  holds an API key or talks to a vendor directly. Model *configuration* was specified but not implemented —
-  see §6.
+  holds an API key or talks to a vendor directly. Vendor and model family are configurable via
+  `bigUML.ai.modelVendor` / `bigUML.ai.modelFamily`, with a fallback to any model of the configured vendor
+  when the requested family isn't installed (§2).
 - A deterministic follow-up provider (`provideFollowups`) that suggests next actions (accept/revise
   summary, add entities, show progress, etc.) as clickable chips under each response.
 
@@ -236,13 +244,6 @@ Key design decisions:
 
 ## 6. What's missing / known gaps
 
-- **Model configuration settings are declared but dead.** `application/vscode/package.json` contributes
-  `bigUML.ai.modelVendor` (default `"copilot"`) and `bigUML.ai.modelFamily` (documented as accepting e.g.
-  `gpt-4o` or `claude-3.5-sonnet`, "falls back to any available model"), and both show up in the VS Code
-  settings UI — but `big-ai` never calls `workspace.getConfiguration()` anywhere. The single call site,
-  `interview-agent.participant.ts:542`, hardcodes `vendor: 'copilot'` with no family filter. Changing either
-  setting has no effect. Either wire them into `selectChatModels()` or drop them from the manifest; leaving
-  a settings UI that silently does nothing is worse than having none.
 - **File-write grammar check is syntax-only, not semantic.** All mutating tools write the `.uml` file
   directly via `stringifyUmlDiagramFile()`, which only re-parses the result and checks for parser errors —
   it doesn't run Langium's linker/scoping or any custom validators, so a diagram that parses but is
