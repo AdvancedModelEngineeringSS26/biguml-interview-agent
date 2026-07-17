@@ -40,8 +40,10 @@ export function formatProposalSummary(proposal: ProposeDiagramInput): string {
         lines.push('- **Relationships:**');
         for (const relationship of relationships) {
             const label = 'name' in relationship && relationship.name ? ` (${relationship.name})` : '';
+            const guard = 'guard' in relationship && relationship.guard ? ` [${relationship.guard}]` : '';
+            const weight = 'weight' in relationship && relationship.weight !== undefined ? ` weight=${relationship.weight}` : '';
             lines.push(
-                `  - \`${relationship.sourceName}\` → \`${relationship.targetName}\` — ${relationship.relationType}${label}`
+                `  - \`${relationship.sourceName}\` → \`${relationship.targetName}\` — ${relationship.relationType}${label}${guard}${weight}`
             );
         }
     } else {
