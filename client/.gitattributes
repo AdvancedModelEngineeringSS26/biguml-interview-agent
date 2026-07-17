@@ -1,0 +1,16 @@
+# Normalize all text files to LF in the repository and on checkout, regardless of the
+# local core.autocrlf setting. Without this, a Windows checkout with core.autocrlf=true
+# converts LF blobs to CRLF locally, which then makes every one of those files show up
+# as "modified" in git status/diff even though nothing was actually edited.
+* text=auto eol=lf
+
+# Known binary types: never attempt line-ending normalization or text diffing on these.
+*.gif binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary

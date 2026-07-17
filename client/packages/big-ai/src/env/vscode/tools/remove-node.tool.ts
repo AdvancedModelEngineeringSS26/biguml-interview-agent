@@ -12,6 +12,7 @@ import { inject, injectable } from 'inversify';
 import * as vscode from 'vscode';
 import type { RemoveNodeInput } from '../../common/index.js';
 import { createToolResult, resolveWorkspacePath, validateRequiredString, validateUmlDiagramFile } from './tool-utils.js';
+import { stringifyUmlDiagramFile } from './uml-file-format.js';
 
 interface UmlNode {
     __type: string;
@@ -91,7 +92,11 @@ export class RemoveNodeTool implements vscode.LanguageModelTool<RemoveNodeInput>
             m => m.__id !== `size_${removedId}` && m.__id !== `pos_${removedId}`
         );
 
-        await vscode.workspace.fs.writeFile(uri, Buffer.from(JSON.stringify(diagram, null, '\t'), 'utf-8'));
+        try {
+            await vscode.workspace.fs.writeFile(uri, Buffer.from(stringifyUmlDiagramFile(diagram), 'utf-8'));
+        } catch (e) {
+            return createToolResult(`Error: ${e instanceof Error ? e.message : String(e)}`);
+        }
 
         this.outputChannel.appendLine(`[big-ai] Removed "${name}" (id: ${removedId}) via file write`);
         return createToolResult(`Removed "${name}" from ${filePath}`);

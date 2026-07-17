@@ -8,7 +8,7 @@
  *********************************************************************************/
 
 import type { UmlRelationType } from '../../common/index.js';
-import { generateId, ref, toParserSafeMultiplicity } from './tool-utils.js';
+import { generateId, ref, toParserSafeMultiplicity, toParserSafeName } from './tool-utils.js';
 
 const RELATION_TYPE_MAP: Record<UmlRelationType, string> = {
     Association: 'ASSOCIATION',
@@ -62,7 +62,7 @@ export function buildRelationRecord(params: RelationRecordParams): Record<string
     }
 
     if (NAMED_RELATION_TYPES.has(relationType) && name !== undefined) {
-        relation['name'] = name;
+        relation['name'] = toParserSafeName(name);
     }
 
     if (MULTIPLICITY_TYPES.has(relationType)) {

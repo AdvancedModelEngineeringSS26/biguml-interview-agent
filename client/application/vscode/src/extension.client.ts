@@ -81,6 +81,18 @@ export async function activateClient(context: vscode.ExtensionContext): Promise<
                     connector.sendActionToServer(client, SaveModelAction.create());
                     return true;
                 }
+            ),
+            vscode.commands.registerCommand(
+                'biguml.operations.createMember',
+                (filePath: string, elementTypeId: string, containerId: string, name: string): boolean => {
+                    const connector = diContainer?.get<BigGlspVSCodeConnector>(TYPES.GlspVSCodeConnector);
+                    if (!connector) return false;
+                    const client = findClientForFile(connector, filePath);
+                    if (!client) return false;
+                    connector.sendActionToServer(client, CreateNodeOperation.create(elementTypeId, { containerId, args: { name } }));
+                    connector.sendActionToServer(client, SaveModelAction.create());
+                    return true;
+                }
             )
         );
     } catch (error) {

@@ -71,6 +71,24 @@ export function resolveWorkspacePath(filePath: string, options: { requireUmlExte
     return vscode.Uri.file(resolvedPath);
 }
 
+/**
+ * Normalizes a user-supplied name into a parser-safe identifier (grammar terminal LANGIUM_ID: /[\w_\*-]+/,
+ * i.e. no spaces or punctuation). Multi-word input is joined into camelCase; already-safe names pass through
+ * unchanged. Without this, a name like "date of birth" serializes as `"date of birth"`, which the UML grammar
+ * cannot parse back (it reads "date" as the full string and then fails on the next word).
+ */
+export function toParserSafeName(value: string): string {
+    const trimmed = value.trim();
+    if (/^[\w*-]+$/.test(trimmed)) {
+        return trimmed;
+    }
+    const words = trimmed.split(/[^\w]+/).filter(Boolean);
+    if (words.length === 0) {
+        throw new Error(`"${value}" does not contain any valid identifier characters.`);
+    }
+    return words.map((word, index) => (index === 0 ? word : word.charAt(0).toUpperCase() + word.slice(1))).join('');
+}
+
 export function validateRequiredString(value: unknown, fieldName: string): string {
     if (typeof value !== 'string') {
         throw new Error(`${fieldName} must be a string.`);

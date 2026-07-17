@@ -13,7 +13,7 @@ export const AI_PARTICIPANT_FULL_NAME = 'bigUML Interview Agent';
 
 export const UML_TOOL_NAMES = {
     dummy: 'biguml-dummy-tool',
-  completeInterviewStep: 'biguml-complete-interview-step',
+    completeInterviewStep: 'biguml-complete-interview-step',
     generateClassDiagram: 'biguml-generate-class-diagram',
     generateActivityDiagram: 'biguml-generate-activity-diagram',
     proposeDiagram: 'biguml-propose-diagram',
@@ -138,6 +138,15 @@ Node types: Activity, ActivityPartition, OpaqueAction, AcceptEventAction, SendSi
 Relation types: ControlFlow. ControlFlow may include optional guards and weights. Use guards for decision outcomes.
 
 If the user implies an unsupported element, ask a clarifying question or state the closest supported mapping in the summary before generation.
+
+## Relation Direction (source vs. target)
+For directional relation types, source and target are not interchangeable — get this backwards and the rendered arrow points the wrong way:
+- Generalization: source is the more specific type (the subclass/child), target is the more general type (the superclass/parent). "Dog extends Animal" / "Dog is a kind of Animal" / "Dog inherits from Animal" all mean sourceName: Dog, targetName: Animal.
+- Realization / InterfaceRealization: source is the implementing/realizing element, target is the interface or more abstract element being realized.
+- Dependency / Usage / Abstraction: source is the element that depends on / uses the other, target is the element being depended on / used.
+- Composition / Aggregation: source is the whole (the container), target is the part.
+- Association: for a phrase like "A has many B" or "A owns B", source is A and target is B, unless the user's phrasing clearly reverses this.
+If a relationship's direction is not clearly stated or implied by the user's phrasing, ask instead of guessing.
 
 ## Generation Protocol (tool-driven)
 Generation is driven entirely by two tools. You never write the summary or the diagram yourself.

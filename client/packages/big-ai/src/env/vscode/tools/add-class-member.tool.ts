@@ -11,7 +11,15 @@ import { OutputChannel } from '@borkdominik-biguml/big-vscode/vscode';
 import { inject, injectable } from 'inversify';
 import * as vscode from 'vscode';
 import type { AddClassMemberInput, UmlClassMemberKind, UmlVisibility } from '../../common/index.js';
-import { createToolResult, generateId, resolveWorkspacePath, toParserSafeMultiplicity, validateRequiredString, validateUmlDiagramFile } from './tool-utils.js';
+import {
+    createToolResult,
+    generateId,
+    resolveWorkspacePath,
+    toParserSafeMultiplicity,
+    toParserSafeName,
+    validateRequiredString,
+    validateUmlDiagramFile
+} from './tool-utils.js';
 import { stringifyUmlDiagramFile } from './uml-file-format.js';
 
 interface UmlNode {
@@ -88,7 +96,7 @@ export class AddClassMemberTool implements vscode.LanguageModelTool<AddClassMemb
         let uri: vscode.Uri;
         try {
             ownerElementName = validateRequiredString(ownerName, 'ownerName');
-            memberName = toParserSafeMemberName(validateRequiredString(name, 'name'));
+            memberName = toParserSafeMemberName(toParserSafeName(validateRequiredString(name, 'name')));
             if (!MEMBER_KINDS.has(memberKind)) {
                 throw new Error(`Unsupported memberKind "${String(memberKind)}".`);
             }

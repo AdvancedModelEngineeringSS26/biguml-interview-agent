@@ -122,6 +122,12 @@ export interface InterviewSession {
     firstResponseSent: boolean;
     autoCompletedSteps: number[];
     draft: DiagramDraft;
+    /**
+     * `context.history.length` at the moment this session started. Chat history from before this index
+     * belongs to a previous (possibly already-completed) interview and must not be fed back to the model as
+     * if it were part of this one.
+     */
+    historyStartIndex: number;
 }
 
 export interface DiagramDraft {
@@ -163,7 +169,7 @@ export class InterviewSessionManager {
         return this._session.steps[this._session.currentStepIndex];
     }
 
-    startNew(): InterviewSession {
+    startNew(historyStartIndex = 0): InterviewSession {
         this._session = {
             isActive: true,
             isCompleted: false,
@@ -180,7 +186,8 @@ export class InterviewSessionManager {
                 entities: [],
                 relationships: [],
                 details: []
-            }
+            },
+            historyStartIndex
         };
         return this._session;
     }
