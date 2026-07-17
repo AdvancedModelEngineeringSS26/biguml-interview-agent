@@ -11,6 +11,7 @@ export * from './tool-utils.js';
 export * from './dummy.tool.js';
 export * from './complete-interview-step.tool.js';
 export * from './generate-class-diagram.tool.js';
+export * from './generate-activity-diagram.tool.js';
 export * from './propose-diagram.tool.js';
 export * from './confirm-generation.tool.js';
 export * from './generate-deployment-diagram.tool.js';

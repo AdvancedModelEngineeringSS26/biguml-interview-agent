@@ -496,9 +496,112 @@
         }
       },
       {
+        "name": "biguml-generate-activity-diagram",
+        "displayName": "Generate UML Activity Diagram",
+        "modelDescription": "Generates a complete UML activity diagram in deterministic order. Use this after /interview confirmation instead of calling create/add-node/add-relation separately.",
+        "canBeReferencedInPrompt": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "filePath": {
+              "type": "string",
+              "description": "Workspace-relative path for the generated .uml file"
+            },
+            "diagramType": {
+              "type": "string",
+              "enum": [
+                "ACTIVITY"
+              ],
+              "description": "The type of UML diagram to generate"
+            },
+            "entities": {
+              "type": "array",
+              "description": "All confirmed activity diagram nodes.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "Node name"
+                  },
+                  "elementType": {
+                    "type": "string",
+                    "enum": [
+                      "Activity",
+                      "ActivityPartition",
+                      "OpaqueAction",
+                      "AcceptEventAction",
+                      "SendSignalAction",
+                      "InitialNode",
+                      "DecisionNode",
+                      "MergeNode",
+                      "JoinNode",
+                      "ForkNode",
+                      "ActivityFinalNode",
+                      "FlowFinalNode",
+                      "CentralBufferNode",
+                      "ActivityParameterNode",
+                      "InputPin",
+                      "OutputPin"
+                    ],
+                    "description": "UML activity element type"
+                  }
+                },
+                "required": [
+                  "name",
+                  "elementType"
+                ]
+              }
+            },
+            "relationships": {
+              "type": "array",
+              "description": "All confirmed control flows between activity nodes.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "relationType": {
+                    "type": "string",
+                    "enum": [
+                      "ControlFlow"
+                    ]
+                  },
+                  "sourceName": {
+                    "type": "string"
+                  },
+                  "targetName": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "guard": {
+                    "type": "string",
+                    "description": "Optional guard for decision outcomes"
+                  },
+                  "weight": {
+                    "type": "number",
+                    "description": "Optional non-negative integer flow weight"
+                  }
+                },
+                "required": [
+                  "relationType",
+                  "sourceName",
+                  "targetName"
+                ]
+              }
+            }
+          },
+          "required": [
+            "filePath",
+            "diagramType",
+            "entities"
+          ]
+        }
+      },
+      {
         "name": "biguml-propose-diagram",
         "displayName": "Propose UML Diagram",
-        "modelDescription": "Presents the complete proposed diagram (class or deployment) to the user for confirmation. Call this once every requirement (scope, entities, relationships, details, target .uml file) is known. The extension renders the summary from this input — do not write the summary yourself. This does not modify any file.",
+        "modelDescription": "Presents the complete proposed diagram (class or deployment or activity) to the user for confirmation. Call this once every requirement (scope, entities, relationships, details, target .uml file) is known. The extension renders the summary from this input — do not write the summary yourself. This does not modify any file.",
         "canBeReferencedInPrompt": false,
         "inputSchema": {
           "type": "object",
@@ -511,13 +614,14 @@
               "type": "string",
               "enum": [
                 "CLASS",
-                "DEPLOYMENT"
+                "DEPLOYMENT",
+                "ACTIVITY"
               ],
               "description": "The type of UML diagram to generate"
             },
             "entities": {
               "type": "array",
-              "description": "All confirmed diagram entities. For CLASS diagrams use class element types and include properties/operations under their owning entity. For DEPLOYMENT diagrams use deployment node types (properties/operations do not apply).",
+              "description": "All confirmed diagram entities. For CLASS diagrams use class element types and include properties/operations under their owning entity. For DEPLOYMENT diagrams use deployment node types. For ACTIVITY diagrams use activity node types.",
               "items": {
                 "type": "object",
                 "properties": {
@@ -541,9 +645,25 @@
                       "DeploymentNode",
                       "DeploymentSpecification",
                       "DeploymentPackage",
-                      "DeploymentModel"
+                      "DeploymentModel",
+                      "Activity",
+                      "ActivityPartition",
+                      "OpaqueAction",
+                      "AcceptEventAction",
+                      "SendSignalAction",
+                      "InitialNode",
+                      "DecisionNode",
+                      "MergeNode",
+                      "JoinNode",
+                      "ForkNode",
+                      "ActivityFinalNode",
+                      "FlowFinalNode",
+                      "CentralBufferNode",
+                      "ActivityParameterNode",
+                      "InputPin",
+                      "OutputPin"
                     ],
-                    "description": "UML element type. CLASS diagrams: Class, AbstractClass, Interface, Enumeration, Package, DataType, PrimitiveType. DEPLOYMENT diagrams: Artifact, Device, ExecutionEnvironment, DeploymentNode, DeploymentSpecification, DeploymentPackage, DeploymentModel."
+                    "description": "UML element type. CLASS diagrams: Class, AbstractClass, Interface, Enumeration, Package, DataType, PrimitiveType. DEPLOYMENT diagrams: Artifact, Device, ExecutionEnvironment, DeploymentNode, DeploymentSpecification, DeploymentPackage, DeploymentModel. ACTIVITY diagrams: Activity, ActivityPartition, OpaqueAction, AcceptEventAction, SendSignalAction, InitialNode, DecisionNode, MergeNode, JoinNode, ForkNode, ActivityFinalNode, FlowFinalNode, CentralBufferNode, ActivityParameterNode, InputPin, OutputPin."
                   },
                   "properties": {
                     "type": "array",
@@ -629,9 +749,10 @@
                       "Usage",
                       "CommunicationPath",
                       "Manifestation",
-                      "Deployment"
+                      "Deployment",
+                      "ControlFlow"
                     ],
-                    "description": "Relationship type. CLASS diagrams use class relations (Association, Aggregation, Composition, Abstraction, Dependency, Generalization, InterfaceRealization, PackageImport, PackageMerge, Realization, Substitution, Usage). DEPLOYMENT diagrams use CommunicationPath, Manifestation, Deployment, Dependency, Generalization."
+                    "description": "Relationship type. CLASS diagrams use class relations (Association, Aggregation, Composition, Abstraction, Dependency, Generalization, InterfaceRealization, PackageImport, PackageMerge, Realization, Substitution, Usage). DEPLOYMENT diagrams use CommunicationPath, Manifestation, Deployment, Dependency, Generalization. ACTIVITY diagrams use ControlFlow."
                   },
                   "sourceName": {
                     "type": "string"
@@ -647,6 +768,12 @@
                   },
                   "targetMultiplicity": {
                     "type": "string"
+                  },
+                  "guard": {
+                    "type": "string"
+                  },
+                  "weight": {
+                    "type": "number"
                   }
                 },
                 "required": [
@@ -690,7 +817,8 @@
               "type": "string",
               "enum": [
                 "CLASS",
-                "DEPLOYMENT"
+                "DEPLOYMENT",
+                "ACTIVITY"
               ],
               "description": "The type of UML diagram to create"
             }

@@ -29,8 +29,8 @@ export class CreateUmlFileTool implements vscode.LanguageModelTool<CreateUmlFile
 
         let uri: vscode.Uri;
         try {
-            if (diagramType !== 'CLASS' && diagramType !== 'DEPLOYMENT') {
-                throw new Error('diagramType must be CLASS or DEPLOYMENT.');
+            if (diagramType !== 'CLASS' && diagramType !== 'DEPLOYMENT' && diagramType !== 'ACTIVITY') {
+                throw new Error('diagramType must be CLASS, DEPLOYMENT, or ACTIVITY.');
             }
             const requestedPath = validateRequiredString(filePath, 'filePath');
             const normalized = requestedPath.toLowerCase().endsWith('.uml') ? requestedPath : `${requestedPath}.uml`;

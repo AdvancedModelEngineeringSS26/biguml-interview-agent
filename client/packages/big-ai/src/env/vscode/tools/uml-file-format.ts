@@ -23,7 +23,8 @@ const services = createUmlDiagramServices(NodeFileSystem);
 
 const DIAGRAM_ROOT: Record<DiagramType, { __type: string; __id: string }> = {
     CLASS: { __type: 'ClassDiagram', __id: 'ClassDiagram1' },
-    DEPLOYMENT: { __type: 'DeploymentDiagram', __id: 'DeploymentDiagram1' }
+    DEPLOYMENT: { __type: 'DeploymentDiagram', __id: 'DeploymentDiagram1' },
+    ACTIVITY: { __type: 'ActivityDiagram', __id: 'ActivityDiagram1' }
 };
 
 export function emptyUmlDiagramFile(diagramType: DiagramType = 'CLASS'): UmlRecord {

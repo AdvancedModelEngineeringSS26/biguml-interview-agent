@@ -462,12 +462,15 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         const statusQuerySource = parsedCommand.type === 'interview' ? parsedCommand.argument : request.prompt;
         const isStatusRequest = looksLikeStatusRequest(statusQuerySource);
         const isPlanningRequest = parsedCommand.type === 'plan' || looksLikePlanningRequest(statusQuerySource);
-        const interviewState = this.deriveInterviewState(context, parsedCommand);
+        const interviewState = this.deriveInterviewState(context, request.prompt, parsedCommand);
         // The step machine (step header, step-scoped system instructions, step-scoped tool restrictions)
         // must only ever engage for the interview itself — never for /modify, /explain, or /plan, even if
         // an interview session happens to be active in the background.
         const isInterviewFlow = parsedCommand.type === 'interview' || parsedCommand.type === 'default';
-        const isDeploymentInterview = interviewState.diagramType === 'DEPLOYMENT';
+        // The 6-step session is hard-coded to class-diagram language ("main entities", "classes and
+        // interfaces", "associations and multiplicities"), so any diagram type it can't speak to bypasses
+        // it entirely and uses the legacy single-pass propose/confirm flow instead.
+        const isDeploymentInterview = interviewState.diagramType === 'DEPLOYMENT' || interviewState.diagramType === 'ACTIVITY';
 
         const isBareInterview = parsedCommand.type === 'interview' && !parsedCommand.argument.trim();
         const isNewSessionRequest = parsedCommand.type === 'interview' && (!this.sessionManager.isActive || isBareInterview);
@@ -489,7 +492,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         if (isNewSessionRequest && !isStatusRequest) {
             if (isDeploymentInterview) {
                 this.outputChannel.appendLine(
-                    '[big-ai] Deployment diagram requested — using the legacy (non-stepped) interview flow, no step session started'
+                    `[big-ai] ${interviewState.diagramType} diagram requested — using the legacy (non-stepped) interview flow, no step session started`
                 );
             } else {
                 // context.history is everything before this turn, i.e. exactly the boundary of "belongs to a
@@ -967,7 +970,7 @@ export class InterviewAgentParticipant implements OnActivate, OnDispose {
         content: string
     ): number {
         const stepsAnswered = this.analyzeSkipAhead(content);
-        const currentStep = this.sessionManager.currentStepNumber; 
+        const currentStep = this.sessionManager.currentStepNumber;
 
         const consecutive: number[] = [];
         for (let i = 0; i < stepsAnswered.length; i++) {
@@ -1432,11 +1435,11 @@ Use only confirmed information from the transcript. Include relationships after 
         return followupsByCommand[commandType] ?? followupsByCommand['default'];
     }
 
-    protected deriveInterviewState(context: vscode.ChatContext, command: ParsedCommand): InterviewState {
+    protected deriveInterviewState(context: vscode.ChatContext, prompt: string, command: ParsedCommand): InterviewState {
         const pendingProposal = this.findPendingProposal(context);
         const awaitingConfirmation = pendingProposal !== undefined;
         const phase = this.deriveInterviewPhase(context, command, awaitingConfirmation);
-        const diagramType = pendingProposal?.diagramType ?? this.deriveDiagramType(context, command);
+        const diagramType = pendingProposal?.diagramType ?? this.deriveDiagramType(context, prompt, command);
 
         return {
             phase,
@@ -1447,40 +1450,6 @@ Use only confirmed information from the transcript. Include relationships after 
             awaitingConfirmation,
             pendingProposal
         };
-    }
-
-    /**
-     * Deployment diagrams never get a step session (see `isDeploymentInterview` in `handleRequest`) — they
-     * stay on the legacy propose/confirm flow, so this only needs to catch intent once from the current
-     * message or, failing that, from history, not track per-step state.
-     */
-    protected deriveDiagramType(context: vscode.ChatContext, command: ParsedCommand): 'CLASS' | 'DEPLOYMENT' {
-        if (this.isDeploymentIntent(command.argument)) {
-            return 'DEPLOYMENT';
-        }
-
-        const history = [...context.history].reverse();
-        for (const turn of history) {
-            let text = '';
-            if (turn instanceof vscode.ChatRequestTurn) {
-                text = turn.prompt;
-            } else if (turn instanceof vscode.ChatResponseTurn) {
-                text = this.responseTurnText(turn);
-            }
-
-            if (this.isDeploymentIntent(text)) {
-                return 'DEPLOYMENT';
-            }
-            if (/\bclass\b/i.test(text)) {
-                return 'CLASS';
-            }
-        }
-
-        return 'CLASS';
-    }
-
-    protected isDeploymentIntent(text: string): boolean {
-        return /\b(deployment|device|execution\s*environment|communication\s*path)\b/i.test(text);
     }
 
     protected findPendingProposal(context: vscode.ChatContext): ProposeDiagramInput | undefined {
@@ -1502,6 +1471,60 @@ Use only confirmed information from the transcript. Include relationships after 
             }
         }
         return undefined;
+    }
+
+    protected deriveDiagramType(
+        context: vscode.ChatContext,
+        prompt: string,
+        command: ParsedCommand
+    ): 'CLASS' | 'DEPLOYMENT' | 'ACTIVITY' {
+        if (this.isActivityIntent(prompt) || (command.type === 'interview' && this.isActivityIntent(command.argument))) {
+            return 'ACTIVITY';
+        }
+        if (this.isDeploymentIntent(prompt) || (command.type === 'interview' && this.isDeploymentIntent(command.argument))) {
+            return 'DEPLOYMENT';
+        }
+
+        const history = [...context.history].reverse();
+        for (const turn of history) {
+            let text = '';
+            if (turn instanceof vscode.ChatRequestTurn) {
+                text = turn.prompt;
+            } else if (turn instanceof vscode.ChatResponseTurn) {
+                text = this.responseTurnText(turn);
+            }
+
+            if (this.isActivityIntent(text)) {
+                return 'ACTIVITY';
+            }
+            if (this.isDeploymentIntent(text)) {
+                return 'DEPLOYMENT';
+            }
+            if (/\bclass\b/i.test(text)) {
+                return 'CLASS';
+            }
+        }
+
+        return 'CLASS';
+    }
+
+    protected isDeploymentIntent(text: string): boolean {
+        return /\b(deployment|device|execution\s*environment|communication\s*path)\b/i.test(text);
+    }
+
+    protected isActivityIntent(text: string): boolean {
+        return /\b(activity\s*diagram|activity|workflow|process\s*flow|swimlane|swim\s*lane|control\s*flow|decision|merge|fork|join|initial\s*node|final\s*node)\b/i.test(text);
+    }
+
+    protected generationToolName(diagramType: 'CLASS' | 'DEPLOYMENT' | 'ACTIVITY'): string {
+        switch (diagramType) {
+            case 'ACTIVITY':
+                return UML_TOOL_NAMES.generateActivityDiagram;
+            case 'DEPLOYMENT':
+                return UML_TOOL_NAMES.generateDeploymentDiagram;
+            case 'CLASS':
+                return UML_TOOL_NAMES.generateClassDiagram;
+        }
     }
 
     protected deriveInterviewPhase(
@@ -1644,7 +1667,7 @@ ${this.buildInterviewTranscript(history)}`;
 
         const stateRule = interviewState.awaitingConfirmation
             ? 'A complete proposal has already been shown to the user. If the user approves in any wording, call biguml-confirm-generation (no arguments). If the user requests any change, call biguml-propose-diagram again with the corrected specification. Otherwise answer their question or ask one clarifying question. Do not write the summary yourself.'
-            : 'No proposal has been shown yet. Continue the interview by asking exactly one clear question, or call biguml-propose-diagram once scope, entities, relationships, details, and the target .uml file are all known. The target .uml file is the last missing item, not an early-step question. Do not call biguml-confirm-generation. You may offer concrete suggestions, but label them as suggestions the user can accept or change.';
+            : 'No proposal has been shown yet. Continue the interview by asking exactly one clear question, or call biguml-propose-diagram once scope, entities, relationships, details, and the target .uml file are all known. For ACTIVITY diagrams, known details include actions, initial/final nodes, control-flow sequence, decision guards, fork/join parallelism, and optional swimlanes/partitions when applicable. Do not call biguml-confirm-generation. You may offer concrete suggestions, but label them as suggestions the user can accept or change.';
 
         return `## Interview State
 - Phase: ${interviewState.phase}
@@ -1659,7 +1682,8 @@ Use this transcript as the source of truth for requirements. Do not invent missi
 If the last user message is a .uml path, treat it as the target diagram file, not as attribute or operation details.
 When summarizing step 5, keep it short and do not mention missing information or the file path unless the user explicitly supplied one.
 Only generate attributes or operations that the user explicitly named, explicitly accepted from the previous assistant suggestion, or explicitly requested no details.
-Short acknowledgements such as yes, ok, sure, use those, that works, and sounds good confirm the concrete items suggested in the immediately preceding assistant turn.
+For ACTIVITY diagrams, do not generate unsupported concepts. Ask to map them to supported activity nodes or omit them before proposing.
+Short acknowledgements such as yes, ok, sure, use those, that works, and sounds good confirm the concrete items suggested in the immediately previous assistant turn.
 
 ${this.buildInterviewTranscript(history)}`;
     }
@@ -1684,10 +1708,11 @@ ${this.buildInterviewTranscript(history)}`;
                     You are in INTERVIEW mode. Your goals:
                     1. Gather ${interviewState.diagramType.toLowerCase()} diagram requirements in this order: scope, entities, relationships, details, confirmation.
                     2. Ask exactly one clarifying question per assistant response when information is missing.
-                    3. Avoid compound prompts such as multiple bullet questions or several alternatives that all need answers.
-                    4. Show the required summary before generation.
-                    5. Ask for the target .uml file path only after the other requirements are known.
-                    6. Generate only after explicit confirmation of a previous summary.`,
+                    3. Avoid compound prompts such as multiple bullet questions, "for example" question lists, or several alternatives that all need answers.
+                    4. When scope, entities, relationships, details, and the target .uml file are all known, call biguml-propose-diagram with the complete specification. Do not hand-write the summary; the tool renders it.
+                    5. After a proposal is shown, call biguml-confirm-generation when the user approves in any wording, or call biguml-propose-diagram again if they request changes.
+                    6. Generate only through these tools; never write raw UML, JSON, or a summary yourself.
+                    7. For ACTIVITY diagrams, collect actions as OpaqueAction nodes, starts as InitialNode, process completions as ActivityFinalNode or FlowFinalNode, branches as DecisionNode/MergeNode with guarded ControlFlows, parallelism as ForkNode/JoinNode, and swimlanes as ActivityPartition nodes.`,
 
             modify: `## Modification Mode Activation
                     You are in MODIFY mode. Apply the user's requested changes to the active diagram by calling the editing tools (add/remove nodes, members and relations). Do not just describe the change — make it. Briefly confirm in plain UML terms what you changed.`,
