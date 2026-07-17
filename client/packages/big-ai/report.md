@@ -318,4 +318,32 @@ Key design decisions:
 
 ## Feedback and Recommendations
 
-**[TODO]**
+### What worked well
+
+The **propose/confirm gate** is the most critical design decision and is working as intended. Separating
+the plan turn (`proposeDiagram`) from the execute turn (`confirmGeneration` → `generateClassDiagram`)
+avoids the partial-write failures that plagued earlier incremental tool sequences and makes the flow
+easy to reason about. This gate should be preserved for any future diagram-type extensions.
+
+The **6-step session manager** gives the interview a predictable structure. The explicit `policy`
+objects per step (`canSkip`, `advancementSignals`, `summaryMode`) mean the flow can be modified without
+touching the main request handler.
+
+The **tool-layer isolation** — one file per tool with its own validation and Langium round-trip check
+— is the right architecture. Tools are independently testable and can later be re-exposed over MCP (§7)
+with minimal restructuring.
+
+### What should be improved
+
+- **The close/reopen diagram hack is fragile.** `openDiagram()` closes then reopens the editor tab to
+  force the GLSP server to re-read the file, which causes a visible flicker and depends on tab lifecycle
+  behavior that may change. The GLSP operation commands already registered in `extension.client.ts`
+  (`createNode`, `deleteElement`, `createEdge`, `createMember`) are the right replacement — wiring the
+  mutating tools through them (with a file-write fallback) would make live diagram updates reliable.
+- **Step-machine coverage should be extended to activity diagrams.** Activity and deployment requests
+  currently fall back to the single-pass flow because the step prompts are written in class-diagram
+  language. Activity diagrams have enough structure (swimlanes, decision branches, parallel paths) that
+  a guided step-by-step interview would meaningfully improve output quality.
+- **Automated tests are missing.** The tool layer (`uml-file-format.ts` round-trips,
+  `toParserSafeName()` edge cases) and the session manager's step-advancement logic are well-suited for
+  unit tests but are currently verified only manually per `INTERVIEW_GENERATION_TESTING.md`.
