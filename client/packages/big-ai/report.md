@@ -1,5 +1,9 @@
 # big-ai — Technical Report
 
+**Demo video:** [DEMO_VIDEO.mp4](DEMO_VIDEO.mp4)
+
+<video src="DEMO_VIDEO.mp4" controls width="700"></video>
+
 ## 1. Overview
 
 `big-ai` is the AI-integration package of the bigUML VS Code extension. It registers a VS Code Chat
@@ -315,7 +319,3 @@ Key design decisions:
   first-class branch at step 1, with two parallel step lists).
 - Consider automated tests around the tool layer (round-trip serialize/parse, parser-safe-name edge cases)
   — currently verified manually per `INTERVIEW_GENERATION_TESTING.md`.
-
-## Feedback and Recommendations
-
-**[TODO]**
