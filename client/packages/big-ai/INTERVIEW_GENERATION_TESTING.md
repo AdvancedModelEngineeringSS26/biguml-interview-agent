@@ -1,6 +1,6 @@
 # Interview Generation Testing
 
-Use this guide to verify that `/interview` gathers enough information before it generates a UML class or deployment diagram.
+Use this guide to verify that `/interview` gathers enough information before it generates a UML class diagram.
 
 ## 1. Static Check
 

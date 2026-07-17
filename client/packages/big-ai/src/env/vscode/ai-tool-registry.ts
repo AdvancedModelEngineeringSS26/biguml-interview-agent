@@ -12,6 +12,7 @@ import { inject, injectable } from 'inversify';
 import * as vscode from 'vscode';
 import { UML_TOOL_NAMES } from '../common/index.js';
 import {
+    CompleteInterviewStepTool,
     AddClassMemberTool,
     AddNodeTool,
     AddRelationTool,
@@ -33,6 +34,7 @@ export class AiToolRegistry implements OnActivate, OnDispose {
 
     constructor(
         @inject(DummyTool) protected readonly dummyTool: DummyTool,
+        @inject(CompleteInterviewStepTool) protected readonly completeInterviewStepTool: CompleteInterviewStepTool,
         @inject(GenerateClassDiagramTool) protected readonly generateClassDiagramTool: GenerateClassDiagramTool,
         @inject(GenerateActivityDiagramTool) protected readonly generateActivityDiagramTool: GenerateActivityDiagramTool,
         @inject(GenerateDeploymentDiagramTool) protected readonly generateDeploymentDiagramTool: GenerateDeploymentDiagramTool,
@@ -54,6 +56,7 @@ export class AiToolRegistry implements OnActivate, OnDispose {
 
         this.toDispose.push(
             vscode.lm.registerTool(UML_TOOL_NAMES.dummy, this.dummyTool),
+            vscode.lm.registerTool(UML_TOOL_NAMES.completeInterviewStep, this.completeInterviewStepTool),
             vscode.lm.registerTool(UML_TOOL_NAMES.generateClassDiagram, this.generateClassDiagramTool),
             vscode.lm.registerTool(UML_TOOL_NAMES.generateActivityDiagram, this.generateActivityDiagramTool),
             vscode.lm.registerTool(UML_TOOL_NAMES.proposeDiagram, this.proposeDiagramTool),

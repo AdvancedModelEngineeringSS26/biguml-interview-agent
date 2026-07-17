@@ -113,19 +113,10 @@ export class AddNodeTool implements vscode.LanguageModelTool<AddNodeInput> {
         const x = 50 + col * 220;
         const y = 50 + row * 160;
 
-        // Try GLSP operation first so the diagram updates immediately
-        if (BOUNDED_TYPES.has(elementType)) {
-            const elementTypeId = NODE_TYPE_ID[elementType];
-            const glspSuccess = await vscode.commands.executeCommand<boolean>(
-                'biguml.operations.createNode', filePath, elementTypeId, elementName, x, y
-            );
-            if (glspSuccess === true) {
-                this.outputChannel.appendLine(`[big-ai] Added ${elementType} "${elementName}" via GLSP operation`);
-                return createToolResult(`Added ${elementType} "${elementName}" to ${filePath}`);
-            }
-        }
-
-        // Fallback: write directly to file (diagram not open or unbounded type)
+        // Write directly to the file with deterministic ids. (The live GLSP createNode operation was used
+        // here before, but it persisted layout entries whose element reference was "undefined", which then
+        // crashed every later edit when the file was re-serialized. The participant refreshes the open
+        // diagram after the edit batch instead.)
         const id = generateId();
         const node = buildNode(elementType, id, elementName, properties);
         diagram.diagram.entities.push(node);

@@ -15,21 +15,15 @@ export function createToolResult(message: string): vscode.LanguageModelToolResul
     return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(message)]);
 }
 
-/** Generates a UML model element id (a leading letter is required by the grammar). */
 export function generateId(): string {
     const uuid = randomUUID();
     return `a${uuid.substring(1)}`;
 }
 
-/** Builds a serialized reference to another model element by id. */
 export function ref(nodeId: string, refType = 'Node'): { __type: 'Reference'; __refType: string; __value: string } {
     return { __type: 'Reference', __refType: refType, __value: nodeId };
 }
 
-/**
- * Normalizes a user-supplied multiplicity into a parser-safe token, or `undefined`
- * when it cannot be represented. Bare identifiers and `*` pass through unchanged.
- */
 export function toParserSafeMultiplicity(value: string): string | undefined {
     const trimmed = value.trim();
     if (trimmed === '*') {

@@ -76,18 +76,8 @@ export class RemoveNodeTool implements vscode.LanguageModelTool<RemoveNodeInput>
             return createToolResult(`Error: No element named "${name}" found in ${filePath}`);
         }
 
-        const elementId = diagram.diagram.entities[index].__id;
-
-        // Try GLSP operation first so the diagram updates immediately
-        const glspSuccess = await vscode.commands.executeCommand<boolean>(
-            'biguml.operations.deleteElement', filePath, elementId
-        );
-        if (glspSuccess === true) {
-            this.outputChannel.appendLine(`[big-ai] Removed "${name}" via GLSP operation`);
-            return createToolResult(`Removed "${name}" from ${filePath}`);
-        }
-
-        // Fallback: write directly to file (diagram not open)
+        // Write directly to the file so the change isn't lost when the diagram server later saves its
+        // in-memory model. The participant refreshes the open diagram after the edit batch.
         const [removed] = diagram.diagram.entities.splice(index, 1);
         const removedId = removed.__id;
 

@@ -91,18 +91,8 @@ export class RemoveRelationTool implements vscode.LanguageModelTool<RemoveRelati
             return createToolResult(`Error: No relation${typeHint} from "${sourceElementName}" to "${targetElementName}" found in ${filePath}`);
         }
 
-        const relation = diagram.diagram.relations[index];
-
-        // Try GLSP operation first so the diagram updates immediately
-        const glspSuccess = await vscode.commands.executeCommand<boolean>(
-            'biguml.operations.deleteElement', filePath, relation.__id
-        );
-        if (glspSuccess === true) {
-            this.outputChannel.appendLine(`[big-ai] Removed ${relation.__type} from "${sourceElementName}" to "${targetElementName}" via GLSP operation`);
-            return createToolResult(`Removed ${relation.__type} from "${sourceElementName}" to "${targetElementName}" in ${filePath}`);
-        }
-
-        // Fallback: write directly to file (diagram not open)
+        // Write directly to the file so the change isn't lost when the diagram server later saves its
+        // in-memory model. The participant refreshes the open diagram after the edit batch.
         const [removed] = diagram.diagram.relations.splice(index, 1);
         await vscode.workspace.fs.writeFile(uri, Buffer.from(JSON.stringify(diagram, null, '\t'), 'utf-8'));
 
